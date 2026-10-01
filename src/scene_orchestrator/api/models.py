@@ -25,7 +25,12 @@ class SceneStatus(str, Enum):
 class SceneBody(BaseModel):
     """Exactly one of persona_file or persona."""
 
-    model_config = ConfigDict(extra="forbid")
+    # The example Swagger pre-fills. Without it, Swagger invents one that sets
+    # persona_file and persona (and seed 0) at once, which is then rejected.
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"persona_file": "fixtures/personas/chatbot/P01.json"}]},
+    )
 
     # A chatbot_v2 persona file, relative to the project root or absolute.
     persona_file: str | None = Field(
