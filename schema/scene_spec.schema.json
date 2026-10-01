@@ -1,0 +1,408 @@
+{
+  "$defs": {
+    "Activity": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "Activity",
+      "type": "object"
+    },
+    "AudioLayer": {
+      "additionalProperties": false,
+      "properties": {
+        "layer": {
+          "title": "Layer",
+          "type": "string"
+        },
+        "gain": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Gain",
+          "type": "number"
+        },
+        "event_rate_per_min": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Event Rate Per Min"
+        }
+      },
+      "required": [
+        "layer",
+        "gain"
+      ],
+      "title": "AudioLayer",
+      "type": "object"
+    },
+    "Lighting": {
+      "additionalProperties": false,
+      "properties": {
+        "sun_elevation_deg": {
+          "maximum": 90.0,
+          "minimum": 0.0,
+          "title": "Sun Elevation Deg",
+          "type": "number"
+        },
+        "sun_azimuth_deg": {
+          "maximum": 360.0,
+          "minimum": 0.0,
+          "title": "Sun Azimuth Deg",
+          "type": "number"
+        },
+        "color_temperature_k": {
+          "maximum": 7000.0,
+          "minimum": 2000.0,
+          "title": "Color Temperature K",
+          "type": "number"
+        },
+        "fog_density": {
+          "maximum": 0.1,
+          "minimum": 0.0,
+          "title": "Fog Density",
+          "type": "number"
+        }
+      },
+      "required": [
+        "sun_elevation_deg",
+        "sun_azimuth_deg",
+        "color_temperature_k",
+        "fog_density"
+      ],
+      "title": "Lighting",
+      "type": "object"
+    },
+    "Motion": {
+      "additionalProperties": false,
+      "properties": {
+        "wind_strength": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Wind Strength",
+          "type": "number"
+        },
+        "wind_direction_deg": {
+          "maximum": 360.0,
+          "minimum": 0.0,
+          "title": "Wind Direction Deg",
+          "type": "number"
+        }
+      },
+      "required": [
+        "wind_strength",
+        "wind_direction_deg"
+      ],
+      "title": "Motion",
+      "type": "object"
+    },
+    "Prop": {
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "title": "Asset",
+          "type": "string"
+        },
+        "count": {
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "distribution": {
+          "enum": [
+            "poisson",
+            "clustered",
+            "ringed",
+            "scattered"
+          ],
+          "title": "Distribution",
+          "type": "string"
+        },
+        "min_spacing": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Spacing"
+        },
+        "exclude_radius": {
+          "minimum": 0.0,
+          "title": "Exclude Radius",
+          "type": "number"
+        },
+        "scale_jitter": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scale Jitter"
+        },
+        "cluster_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cluster Count"
+        }
+      },
+      "required": [
+        "asset",
+        "count",
+        "distribution",
+        "exclude_radius"
+      ],
+      "title": "Prop",
+      "type": "object"
+    },
+    "Skybox": {
+      "additionalProperties": false,
+      "properties": {
+        "uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Uri"
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt"
+        },
+        "projection": {
+          "const": "equirect",
+          "default": "equirect",
+          "title": "Projection",
+          "type": "string"
+        },
+        "resolution": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            }
+          ],
+          "title": "Resolution",
+          "type": "array"
+        }
+      },
+      "required": [
+        "resolution"
+      ],
+      "title": "Skybox",
+      "type": "object"
+    },
+    "Spatial": {
+      "additionalProperties": false,
+      "properties": {
+        "enclosure": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Enclosure",
+          "type": "number"
+        },
+        "sightline_distance_m": {
+          "maximum": 300.0,
+          "minimum": 10.0,
+          "title": "Sightline Distance M",
+          "type": "number"
+        },
+        "prospect_refuge_bias": {
+          "enum": [
+            "prospect",
+            "refuge",
+            "balanced"
+          ],
+          "title": "Prospect Refuge Bias",
+          "type": "string"
+        }
+      },
+      "required": [
+        "enclosure",
+        "sightline_distance_m",
+        "prospect_refuge_bias"
+      ],
+      "title": "Spatial",
+      "type": "object"
+    },
+    "Terrain": {
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "enum": [
+            "flat",
+            "gentle_slope",
+            "rolling",
+            "basin"
+          ],
+          "title": "Profile",
+          "type": "string"
+        },
+        "ground_material": {
+          "title": "Ground Material",
+          "type": "string"
+        },
+        "water": {
+          "$ref": "#/$defs/Water"
+        }
+      },
+      "required": [
+        "profile",
+        "ground_material",
+        "water"
+      ],
+      "title": "Terrain",
+      "type": "object"
+    },
+    "Water": {
+      "additionalProperties": false,
+      "properties": {
+        "present": {
+          "title": "Present",
+          "type": "boolean"
+        },
+        "motion": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Motion",
+          "type": "number"
+        }
+      },
+      "required": [
+        "present",
+        "motion"
+      ],
+      "title": "Water",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "spec_version": {
+      "default": "0.1",
+      "title": "Spec Version",
+      "type": "string"
+    },
+    "scene_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Scene Id",
+      "type": "string"
+    },
+    "seed": {
+      "minimum": 0,
+      "title": "Seed",
+      "type": "integer"
+    },
+    "biome": {
+      "enum": [
+        "coastal_pine",
+        "open_meadow",
+        "forest_clearing",
+        "snowy_valley",
+        "lakeside",
+        "rocky_shore",
+        "birch_grove",
+        "alpine_basin"
+      ],
+      "title": "Biome",
+      "type": "string"
+    },
+    "skybox": {
+      "$ref": "#/$defs/Skybox"
+    },
+    "terrain": {
+      "$ref": "#/$defs/Terrain"
+    },
+    "props": {
+      "items": {
+        "$ref": "#/$defs/Prop"
+      },
+      "title": "Props",
+      "type": "array"
+    },
+    "lighting": {
+      "$ref": "#/$defs/Lighting"
+    },
+    "spatial": {
+      "$ref": "#/$defs/Spatial"
+    },
+    "audio": {
+      "items": {
+        "$ref": "#/$defs/AudioLayer"
+      },
+      "title": "Audio",
+      "type": "array"
+    },
+    "motion": {
+      "$ref": "#/$defs/Motion"
+    },
+    "activity": {
+      "$ref": "#/$defs/Activity"
+    }
+  },
+  "required": [
+    "scene_id",
+    "seed",
+    "biome",
+    "skybox",
+    "terrain",
+    "props",
+    "lighting",
+    "spatial",
+    "audio",
+    "motion",
+    "activity"
+  ],
+  "title": "SceneSpec",
+  "type": "object"
+}

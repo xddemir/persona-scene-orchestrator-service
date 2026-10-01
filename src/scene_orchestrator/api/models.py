@@ -3,11 +3,68 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..clients.image_gen import ImageGenStatus
+from ..models import PersonaProfile, SceneSpec
 from ..outputs import SCENE_ID_PATTERN
+
+# -- /scenes ----------------------------------------------------------------
+
+
+class SceneStatus(str, Enum):
+    QUEUED = "queued"
+    BUILDING_SPEC = "building_spec"
+    GENERATING_IMAGE = "generating_image"
+    READY = "ready"
+    FAILED = "failed"
+
+
+class SceneBody(BaseModel):
+    """Exactly one of persona_file or persona."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # A chatbot_v2 persona file, relative to the project root or absolute.
+    persona_file: str | None = Field(
+        default=None, examples=["fixtures/personas/chatbot/P01.json"]
+    )
+    # Or the same JSON inline.
+    persona: dict[str, Any] | None = None
+    # Omitted: derived from the participant id, so it is stable.
+    seed: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _exactly_one_persona(self) -> SceneBody:
+        if (self.persona_file is None) == (self.persona is None):
+            raise ValueError("give exactly one of persona_file or persona")
+        return self
+
+
+class SceneAccepted(BaseModel):
+    scene_id: str
+    status: SceneStatus
+
+
+class SceneResponse(BaseModel):
+    """Everything about one participant's scene, in one call."""
+
+    scene_id: str  # = participant id
+    status: SceneStatus
+    # Latest progress, e.g. "Slurm job 123456: RUNNING".
+    detail: str | None = None
+    # As converted. Null if it could not be converted, or if the scene ran
+    # before the server last started (only the files on disk are kept).
+    persona: PersonaProfile | None = None
+    spec: SceneSpec | None = None
+    # Relative to out/<scene_id>/.
+    files: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+# -- /skyboxes --------------------------------------------------------------
 
 
 class JobStatus(str, Enum):

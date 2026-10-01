@@ -10,18 +10,35 @@ own dev server uses 8000.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from .. import __version__
+from ..adapters import ChatbotV2Adapter, PersonaAdapterError
 from ..clients.image_gen import SkyboxRequest, SlurmImageGenClient
 from ..config import AppConfig, load_config
-from ..outputs import relative_to_out
+from ..manifest import read_manifest
+from ..models import SceneSpec
+from ..outputs import relative_to_out, scene_dir, scene_spec_path
+from ..pipeline import ScenePipeline, scene_id_for
 from .jobs import JobRunner, SkyboxJob
-from .models import HealthResponse, SkyboxBody, SkyboxFiles, SkyboxJobResponse
+from .models import (
+    HealthResponse,
+    SceneAccepted,
+    SceneBody,
+    SceneResponse,
+    SceneStatus,
+    SkyboxBody,
+    SkyboxFiles,
+    SkyboxJobResponse,
+)
+from .scenes import SceneInProgress, SceneJob, SceneRunner
 
 # uvicorn's own logger, so these lines show up in the server console.
 log = logging.getLogger("uvicorn.error")
@@ -36,6 +53,8 @@ def create_app(
     # Injectable so tests can use a simulated Pegasus.
     client = image_gen or SlurmImageGenClient(config.image_gen)
     runner = JobRunner(client, config.out_dir)
+    adapter = ChatbotV2Adapter()
+    scenes = SceneRunner(ScenePipeline(client, config.out_dir, adapter=adapter))
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -47,9 +66,11 @@ def create_app(
         else:
             log.warning("Pegasus: %s", status.error)
         runner.start()
+        scenes.start()
         try:
             yield
         finally:
+            scenes.stop()
             runner.stop()
 
     app = FastAPI(
@@ -58,6 +79,7 @@ def create_app(
     )
     app.state.config = config
     app.state.runner = runner
+    app.state.scenes = scenes
 
     def to_response(job: SkyboxJob) -> SkyboxJobResponse:
         result = job.result
@@ -92,6 +114,69 @@ def create_app(
     def health() -> HealthResponse:
         return HealthResponse(version=__version__, image_gen=client.status())
 
+    # -- /scenes: persona in, Unity's files out (one scene per participant)
+
+    @app.post("/scenes", response_model=SceneAccepted, status_code=202)
+    async def create_scene(body: SceneBody) -> SceneAccepted:
+        # Only enough here to name the scene. Everything after (a persona that
+        # fails to convert included) runs in the background and ends in the
+        # manifest; without a scene_id there is nothing to put in it, so these
+        # few problems are answered with 422 instead.
+        raw = body.persona if body.persona is not None else _read_persona(body.persona_file)
+        try:
+            scene_id = scene_id_for(adapter.participant_id(raw))
+        except (PersonaAdapterError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        try:
+            job = scenes.submit(SceneJob(scene_id, body.seed, raw))
+        except SceneInProgress:
+            raise HTTPException(status_code=409, detail=f"{scene_id} is already being generated")
+        return SceneAccepted(scene_id=job.scene_id, status=job.status)
+
+    @app.get("/scenes/{scene_id}", response_model=SceneResponse)
+    def get_scene(scene_id: str) -> SceneResponse:
+        """Everything for one participant: status, Slurm progress, persona, spec, files."""
+        job = scenes.get(scene_id)
+        if job is not None:
+            return SceneResponse(
+                scene_id=job.scene_id, status=job.status, detail=job.detail,
+                persona=job.persona, spec=job.spec, files=job.files, error=job.error,
+            )
+        # Not in memory (e.g. after a restart): answer from the files on disk.
+        entry = read_manifest(config.out_dir).get(scene_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"unknown scene {scene_id!r}")
+        return SceneResponse(
+            scene_id=scene_id,
+            status=SceneStatus.READY if entry["status"] == "ok" else SceneStatus.FAILED,
+            spec=_read_spec(config.out_dir, scene_id),
+            files=entry.get("files", []),
+            error=entry.get("error"),
+        )
+
+    @app.get("/scenes/{scene_id}/files/{name}")
+    def get_scene_file(scene_id: str, name: str) -> FileResponse:
+        """Download one of a scene's files, e.g. its skybox PNG.
+
+        Only names listed in the scene's manifest entry are served. Since that
+        list is written by the orchestrator, nothing else on disk is reachable,
+        and a scene still being generated has nothing to download yet.
+        """
+        entry = read_manifest(config.out_dir).get(scene_id)
+        if entry is None or name not in entry.get("files", []):
+            raise HTTPException(status_code=404, detail=f"no file {name!r} for scene {scene_id!r}")
+        try:
+            folder = scene_dir(config.out_dir, scene_id).resolve()
+        except ValueError:
+            raise HTTPException(status_code=404, detail=f"unknown scene {scene_id!r}")
+        path = (folder / name).resolve()
+        if path.parent != folder or not path.is_file():
+            raise HTTPException(status_code=404, detail=f"no file {name!r} for scene {scene_id!r}")
+        return FileResponse(path)
+
+    # -- /skyboxes: one image from a hand-written prompt ------------------
+
     @app.post("/skyboxes", response_model=SkyboxJobResponse, status_code=202)
     async def create_skybox(body: SkyboxBody) -> SkyboxJobResponse:
         job = runner.submit(SkyboxRequest(**body.model_dump()))
@@ -111,6 +196,27 @@ def create_app(
         return to_response(job)
 
     return app
+
+
+def _read_persona(persona_file: str) -> dict[str, Any]:
+    path = Path(persona_file)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        raise HTTPException(status_code=422, detail=f"persona file not found: {persona_file}")
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"cannot read {persona_file}: {exc}")
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=422, detail=f"{persona_file} is not a JSON object")
+    return raw
+
+
+def _read_spec(out_dir: Path, scene_id: str) -> SceneSpec | None:
+    try:
+        path = scene_spec_path(out_dir, scene_id)
+        return SceneSpec.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 # Module-level app for `uvicorn scene_orchestrator.api.app:app`.
