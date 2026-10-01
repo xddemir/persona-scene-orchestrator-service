@@ -1,0 +1,30 @@
+# scene-orchestrator configuration.
+#
+# Pick another file with SCENE_ORCHESTRATOR_CONFIG=configs/<name>.yaml.
+# Relative paths resolve against the working directory (the project root).
+
+out_dir: out
+
+image_gen:
+  # Each skybox is a Slurm job on Pegasus, submitted over the shared SSH
+  # connection you open by hand in WSL and leave open (see README):
+  #   ssh -NM -o ControlPath=~/.ssh/pegasus.sock demir@login1.pegasus.kl.dfki.de
+  login: demir@login1.pegasus.kl.dfki.de
+  control_path: "~/.ssh/pegasus.sock"
+
+  # image-gen on Pegasus, as set up by its scripts/pegasus_setup.sh.
+  repo: /netscratch/demir/image-gen-service
+  venv: /netscratch/demir/venvs/image-gen
+  hf_home: /netscratch/demir/hf
+  remote_out: /netscratch/demir/image-gen/out   # job logs: .slurm/<job id>.out inside
+
+  # The GPU job.
+  partition: RTXA6000
+  account: ei-external
+  gpus: 1
+  time_limit: "00:30:00"
+
+  poll_interval_s: 15    # how often to ask Slurm about the job
+  job_timeout_s: 3600    # submit -> done, queue included; then the job is cancelled
+  ssh_timeout_s: 60      # a single ssh call
+  retries: 1             # retry a failed job once, then mark the skybox failed
