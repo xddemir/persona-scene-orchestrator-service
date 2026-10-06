@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..clients.image_gen import ImageGenStatus
-from ..models import PersonaProfile, SceneSpec
+from ..models import PersonaProfile, SceneSpec, SkyMode
 from ..outputs import SCENE_ID_PATTERN
 
 # -- /scenes ----------------------------------------------------------------
@@ -40,6 +40,9 @@ class SceneBody(BaseModel):
     persona: dict[str, Any] | None = None
     # Omitted: derived from the participant id, so it is stable.
     seed: int | None = Field(default=None, ge=0)
+    # "procedural" makes no image: the scene uses Unity's own sky, set up from
+    # the spec's procedural_sky block.
+    sky_mode: SkyMode = "panorama"
 
     @model_validator(mode="after")
     def _exactly_one_persona(self) -> SceneBody:
@@ -57,6 +60,8 @@ class SceneResponse(BaseModel):
     """Everything about one participant's scene, in one call."""
 
     scene_id: str  # = participant id
+    # "ready" also when the panorama failed and the scene fell back to the
+    # procedural sky: spec.sky_mode is then "procedural" and error says why.
     status: SceneStatus
     # Latest progress, e.g. "Slurm job 123456: RUNNING".
     detail: str | None = None

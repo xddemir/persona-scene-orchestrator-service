@@ -170,6 +170,55 @@ def test_losing_the_connection_mid_job_says_the_job_keeps_running(tmp_path):
     assert not result.ok
     assert result.attempts == 1
     assert "keeps running on Pegasus" in result.error
+    assert result.pending_job_id == "123456"  # so a later run can pick it up
+
+
+# -- picking up a job from an earlier run -----------------------------------
+
+
+def test_each_submitted_job_id_is_reported_at_once(tmp_path):
+    pegasus = FakePegasus(jobs=[("RUNNING", "FAILED"), ("RUNNING", "COMPLETED")])
+    seen = []
+    make_client(pegasus).generate_skybox(REQUEST, tmp_path, on_submitted=seen.append)
+    assert seen == ["123456", "123457"]
+
+
+def test_a_job_from_an_earlier_run_is_waited_for_not_resubmitted(tmp_path):
+    pegasus = FakePegasus(running={"99001": ("RUNNING", "COMPLETED")})
+    progress, submitted = [], []
+    result = make_client(pegasus).generate_skybox(
+        REQUEST, tmp_path, progress.append, resume_job_id="99001", on_submitted=submitted.append
+    )
+
+    assert result.ok
+    assert result.attempts == 1
+    assert pegasus.submitted == [] and submitted == []
+    assert progress[0] == "Slurm job 99001: picked up from an earlier run"
+    assert json.loads(result.sidecar.read_text(encoding="utf-8"))["slurm_job_id"] == "99001"
+
+
+def test_a_picked_up_job_that_failed_is_retried_with_a_new_one(tmp_path):
+    pegasus = FakePegasus(running={"99001": ("FAILED",)})
+    result = make_client(pegasus).generate_skybox(REQUEST, tmp_path, resume_job_id="99001")
+
+    assert result.ok
+    assert result.attempts == 2
+    assert len(pegasus.submitted) == 1
+    assert result.pending_job_id is None
+
+
+def test_without_a_connection_the_job_to_pick_up_is_kept_for_next_time(tmp_path):
+    pegasus = FakePegasus(connected=False, running={"99001": ("RUNNING",)})
+    result = make_client(pegasus).generate_skybox(REQUEST, tmp_path, resume_job_id="99001")
+
+    assert not result.ok
+    assert result.pending_job_id == "99001"
+    assert pegasus.submitted == []
+
+
+def test_a_job_that_finished_badly_leaves_nothing_pending(tmp_path):
+    result = make_client(FakePegasus(jobs=[("FAILED",)])).generate_skybox(REQUEST, tmp_path)
+    assert result.pending_job_id is None
 
 
 # -- health -----------------------------------------------------------------

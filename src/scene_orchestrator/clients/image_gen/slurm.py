@@ -11,6 +11,10 @@ running on Pegasus between requests. The price is the Slurm queue plus about
 30-60 s of model loading per job, which is fine for scenes generated before a
 session.
 
+A job outlives whatever submitted it. Its id is reported the moment Slurm
+accepts it, and a later run given that id waits for the same job rather than
+submitting a second one.
+
 Every ssh call reuses the shared connection you open by hand with your
 password (an OpenSSH ControlMaster), so none of them asks for one. Windows'
 ssh cannot share connections, so the orchestrator runs in WSL.
@@ -143,31 +147,59 @@ class SlurmImageGenClient:
         request: SkyboxRequest,
         out_dir: Path,
         on_progress: Callable[[str], None] | None = None,
+        *,
+        resume_job_id: str | None = None,
+        on_submitted: Callable[[str], None] | None = None,
     ) -> SkyboxResult:
+        """`on_submitted` receives each new job's id as soon as Slurm has it.
+
+        `resume_job_id` is such an id from an earlier run of the same request
+        that never saw the job finish: the first attempt waits for that job
+        instead of submitting another.
+        """
         progress = on_progress or (lambda _: None)
         errors: list[str] = []
+        pending: str | None = None
         for attempt in range(1, self._config.retries + 2):
             try:
-                png, sidecar = self._attempt(request, out_dir, progress)
+                png, sidecar = self._attempt(
+                    request, out_dir, progress, resume_job_id, on_submitted
+                )
             except ImageGenError as exc:
                 errors.append(f"attempt {attempt}: {exc}")
+                pending = exc.pending_job_id
                 if not exc.retryable:
                     break
             else:
                 return SkyboxResult(ok=True, attempts=attempt, png=png, sidecar=sidecar)
-        return SkyboxResult(ok=False, attempts=len(errors), error="; ".join(errors))
+            resume_job_id = None  # that job is over: a retry submits a new one
+        return SkyboxResult(
+            ok=False, attempts=len(errors), error="; ".join(errors), pending_job_id=pending
+        )
 
-    # -- one attempt: submit -> wait -> fetch ------------------------------
+    # -- one attempt: submit (or pick up) -> wait -> fetch -----------------
 
     def _attempt(
-        self, request: SkyboxRequest, out_dir: Path, progress: Callable[[str], None]
+        self,
+        request: SkyboxRequest,
+        out_dir: Path,
+        progress: Callable[[str], None],
+        resume_job_id: str | None,
+        on_submitted: Callable[[str], None] | None,
     ) -> tuple[Path, Path]:
         problem = self._shell.check()
         if problem is not None:
-            raise ImageGenError(problem, retryable=False)
+            # A job being picked up is still out there; keep its id for next time.
+            raise ImageGenError(problem, retryable=False, pending_job_id=resume_job_id)
 
-        job_id = self._submit(request)
-        progress(f"Slurm job {job_id}: submitted")
+        if resume_job_id is not None:
+            job_id = resume_job_id
+            progress(f"Slurm job {job_id}: picked up from an earlier run")
+        else:
+            job_id = self._submit(request)
+            progress(f"Slurm job {job_id}: submitted")
+            if on_submitted is not None:
+                on_submitted(job_id)
         self._wait(job_id, progress)
 
         # Where `image-gen gen` wrote them: <out>/<scene>/<scene>_skybox_<seed>.
@@ -244,6 +276,7 @@ class SlurmImageGenClient:
                         f"lost the SSH connection while Slurm job {job_id} was "
                         f"{last or 'queued'}; it keeps running on Pegasus. {problem}",
                         retryable=False,
+                        pending_job_id=job_id,
                     ) from exc
                 state = last or "PENDING"  # a hiccup: ask again next round
 

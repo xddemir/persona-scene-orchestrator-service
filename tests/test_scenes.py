@@ -3,6 +3,9 @@
 One scene per participant: scene_id is the participant id. Only the Pegasus
 login node is simulated (tests/fakes.py); the adapter, mapper, prompt builder,
 Slurm client, file writing and manifest are all real.
+
+Both sky modes: "panorama" goes through the Slurm job, "procedural" stops
+before it. A panorama that cannot be made falls back to the procedural sky.
 """
 
 from __future__ import annotations
@@ -69,13 +72,16 @@ def test_p01_scene_is_built_end_to_end(config, out_dir):
     assert on_disk.skybox.prompt.startswith("equirectangular 360 view, a sheltered ")
     assert on_disk.skybox.uri == f"skybox_{seed}.png"
     assert (out_dir / "P01" / on_disk.skybox.uri).read_bytes() == PNG
+    assert on_disk.sky_mode == "panorama"
+    assert on_disk.procedural_sky.atmosphere_thickness == 1.72  # there all the same
 
     # manifest.json
     entry = read_manifest(out_dir)["P01"]
+    assert list(entry) == ["status", "sky_mode", "files", "updated_at"]
     assert entry["status"] == "ok"
+    assert entry["sky_mode"] == "panorama"
     assert entry["files"] == scene["files"]
     assert entry["updated_at"].endswith("Z")
-    assert "error" not in entry
 
 
 def test_p02_inline_persona_and_the_manifest_holds_both(config, out_dir):
@@ -88,9 +94,13 @@ def test_p02_inline_persona_and_the_manifest_holds_both(config, out_dir):
     spec = SceneSpec.model_validate_json((out_dir / "P02" / "scene_spec.json").read_text())
     assert spec.skybox.prompt.startswith("equirectangular 360 view, an open ")
 
+    assert spec.sky_mode == "panorama"
+    assert spec.skybox.uri == f"skybox_{derive_seed('P02')}.png"
+
     manifest = read_manifest(out_dir)
     assert list(manifest) == ["P01", "P02"]
     assert {e["status"] for e in manifest.values()} == {"ok"}
+    assert {e["sky_mode"] for e in manifest.values()} == {"panorama"}
 
 
 def test_one_call_returns_everything_for_the_participant(config):
@@ -123,6 +133,54 @@ def test_the_spec_is_available_before_the_image(out_dir):
     assert after_image.skybox.uri.startswith("skybox_")
 
 
+# -- sky_mode "procedural": no image at all ---------------------------------
+
+
+@pytest.mark.parametrize("alias", ["P01", "P02"])
+def test_a_procedural_scene_is_complete_without_an_image(config, out_dir, alias):
+    pegasus = FakePegasus(connected=False)  # never needed
+    with _serve(config, pegasus) as client:
+        scene = _run(client, persona_file=_persona_file(alias), sky_mode="procedural")
+
+    assert scene["status"] == "ready"
+    assert scene["error"] is None
+    assert scene["files"] == ["scene_spec.json"]
+    assert pegasus.submitted == []
+
+    on_disk = SceneSpec.model_validate_json((out_dir / alias / "scene_spec.json").read_text())
+    assert on_disk == SceneSpec.model_validate(scene["spec"])
+    assert on_disk.sky_mode == "procedural"
+    assert on_disk.skybox.uri is None
+    assert on_disk.skybox.prompt.startswith("equirectangular 360 view, ")  # still derived
+    assert [f.name for f in (out_dir / alias).iterdir()] == ["scene_spec.json"]
+
+    entry = read_manifest(out_dir)[alias]
+    assert entry["status"] == "ok"
+    assert entry["sky_mode"] == "procedural"
+    assert entry["files"] == ["scene_spec.json"]
+    assert "error" not in entry
+
+
+def test_the_sky_mode_changes_nothing_else_in_the_spec(out_dir):
+    specs = {}
+    for mode in ("panorama", "procedural"):
+        outcome = ScenePipeline(make_client(FakePegasus()), out_dir / mode).run(
+            _raw("P01"), "P01", sky_mode=mode
+        )
+        specs[mode] = outcome.spec.model_dump()
+    for spec in specs.values():
+        del spec["sky_mode"], spec["skybox"]["uri"]
+    assert specs["panorama"] == specs["procedural"]
+
+
+def test_a_procedural_scene_never_reaches_the_image_stage(out_dir):
+    stages = []
+    ScenePipeline(make_client(FakePegasus()), out_dir).run(
+        _raw("P01"), "P01", sky_mode="procedural", on_stage=stages.append
+    )
+    assert stages == ["building_spec"]
+
+
 # -- seeds ------------------------------------------------------------------
 
 
@@ -139,20 +197,46 @@ def test_derived_seeds_are_stable_and_differ_by_participant():
     assert 0 <= derive_seed("P01") < 2**32
 
 
-# -- every failure ends in the manifest -------------------------------------
+# -- no panorama: fall back to the procedural sky ---------------------------
 
 
-def test_a_failed_slurm_job_is_failed_in_the_manifest(config, out_dir):
-    with _serve(config, FakePegasus(jobs=[("FAILED",)])) as client:
-        scene = _run(client, persona_file=_persona_file("P01"))
+@pytest.mark.parametrize("alias", ["P01", "P02"])
+def test_a_failed_slurm_job_falls_back_to_the_procedural_sky(config, out_dir, alias):
+    pegasus = FakePegasus(jobs=[("FAILED",)])
+    with _serve(config, pegasus) as client:
+        scene = _run(client, persona_file=_persona_file(alias))
 
-    assert scene["status"] == "failed"
-    entry = read_manifest(out_dir)["P01"]
-    assert entry["status"] == "failed"
+    assert len(pegasus.submitted) == 2  # the existing retry came first
+    assert scene["status"] == "ready"  # Unity can render it
+    assert "CUDA out of memory" in scene["error"]
+
+    entry = read_manifest(out_dir)[alias]
+    assert entry["status"] == "fallback"
+    assert entry["sky_mode"] == "procedural"
     assert "CUDA out of memory" in entry["error"]
-    assert entry["files"] == ["scene_spec.json"]  # what was attempted, no image
-    spec = SceneSpec.model_validate_json((out_dir / "P01" / "scene_spec.json").read_text())
+    assert entry["files"] == ["scene_spec.json"]
+    assert "slurm_job_id" not in entry  # that job is over
+
+    spec = SceneSpec.model_validate_json((out_dir / alias / "scene_spec.json").read_text())
+    assert spec == SceneSpec.model_validate(scene["spec"])
+    assert spec.sky_mode == "procedural"  # flipped from the "panorama" asked for
     assert spec.skybox.uri is None
+    assert spec.skybox.prompt is not None  # what was attempted
+
+
+def test_the_fallback_sky_is_the_one_a_procedural_request_gets(out_dir):
+    fallen_back = ScenePipeline(make_client(FakePegasus(jobs=[("FAILED",)])), out_dir / "a").run(
+        _raw("P01"), "P01"
+    )
+    asked_for = ScenePipeline(make_client(FakePegasus()), out_dir / "b").run(
+        _raw("P01"), "P01", sky_mode="procedural"
+    )
+    assert fallen_back.status == "fallback" and asked_for.status == "ok"
+    assert fallen_back.usable and asked_for.usable
+    assert fallen_back.spec == asked_for.spec
+
+
+# -- every failure ends in the manifest -------------------------------------
 
 
 def test_an_invalid_persona_is_failed_in_the_manifest(config, out_dir):
@@ -164,16 +248,26 @@ def test_an_invalid_persona_is_failed_in_the_manifest(config, out_dir):
     assert scene["persona"] is None  # it could not be converted
     entry = read_manifest(out_dir)["P03"]
     assert entry["status"] == "failed"
+    assert entry["sky_mode"] == "panorama"  # as asked for; there is no spec
     assert "Agreeableness" in entry["error"]
     assert entry["files"] == []
+    assert not (out_dir / "P03").exists()
 
 
-def test_no_connection_to_pegasus_is_failed_in_the_manifest(config, out_dir):
+def test_no_connection_to_pegasus_is_a_fallback_in_the_manifest(config, out_dir):
     with _serve(config, FakePegasus(connected=False)) as client:
         _run(client, persona_file=_persona_file("P02"))
     entry = read_manifest(out_dir)["P02"]
-    assert entry["status"] == "failed"
+    assert entry["status"] == "fallback"
     assert "no shared SSH connection" in entry["error"]
+
+
+def test_a_persona_is_only_used_for_its_own_participant(out_dir):
+    outcome = ScenePipeline(make_client(FakePegasus()), out_dir).run(_raw("P02"), "P01")
+    assert outcome.status == "failed" and not outcome.usable
+    assert "'P02'" in outcome.error and "'P01'" in outcome.error
+    assert read_manifest(out_dir)["P01"]["status"] == "failed"
+    assert not (out_dir / "P01").exists()
 
 
 def test_an_unexpected_bug_is_failed_in_the_manifest(config, out_dir, monkeypatch):
@@ -198,7 +292,27 @@ def test_a_scene_is_in_the_manifest_from_the_moment_it_starts(out_dir):
 
     assert seen["generating_image"]["status"] == "failed"
     assert seen["generating_image"]["error"] == UNFINISHED
+    assert "slurm_job_id" not in seen["generating_image"]  # nothing submitted yet
     assert read_manifest(out_dir)["P01"]["status"] == "ok"
+
+
+def test_the_slurm_job_is_in_the_manifest_from_the_moment_it_is_submitted(out_dir):
+    """What a later run needs to pick the job up instead of resubmitting."""
+    seen = []
+
+    def on_progress(message):
+        seen.append((message, read_manifest(out_dir)["P01"]))
+
+    ScenePipeline(make_client(FakePegasus()), out_dir).run(
+        _raw("P01"), "P01", on_progress=on_progress
+    )
+
+    message, entry = seen[1]
+    assert message == "Slurm job 123456: PENDING"
+    assert entry["status"] == "failed" and entry["error"] == UNFINISHED
+    assert entry["slurm_job_id"] == "123456"
+    assert entry["seed"] == derive_seed("P01")
+    assert "slurm_job_id" not in read_manifest(out_dir)["P01"]  # done: nothing pending
 
 
 def test_stages_are_reported_in_order(out_dir):
@@ -221,6 +335,7 @@ def test_stages_are_reported_in_order(out_dir):
         {"persona": {"assessment": {}}},  # no user.alias
         {"persona": {"user": {"alias": "../P01"}}},  # alias that is no safe folder name
         {"persona_file": "x.json", "condition": "A"},  # no conditions any more
+        {"persona_file": _persona_file("P01"), "sky_mode": "hdri"},
     ],
 )
 def test_requests_without_a_usable_scene_id_are_422(config, body):
@@ -270,7 +385,7 @@ def test_only_files_listed_in_the_manifest_are_served(config, scene_id, name):
         assert client.get(f"/scenes/{scene_id}/files/{name}").status_code == 404
 
 
-def test_a_failed_scene_has_no_image_to_download(config):
+def test_a_fallback_scene_has_no_image_to_download(config):
     with _serve(config, FakePegasus(jobs=[("FAILED",)])) as client:
         scene = _run(client, persona_file=_persona_file("P01"))
         assert scene["files"] == ["scene_spec.json"]
@@ -287,3 +402,13 @@ def test_after_a_restart_the_scene_is_read_back_from_disk(config):
     assert scene["spec"]["scene_id"] == "P01"
     assert scene["files"][0] == "scene_spec.json"
     assert scene["persona"] is None  # only known while the server is up
+
+
+def test_after_a_restart_a_fallback_scene_is_still_ready(config):
+    with _serve(config, FakePegasus(jobs=[("FAILED",)])) as client:
+        _run(client, persona_file=_persona_file("P01"))
+    with _serve(config) as fresh:
+        scene = fresh.get("/scenes/P01").json()
+    assert scene["status"] == "ready"
+    assert scene["spec"]["sky_mode"] == "procedural"
+    assert "CUDA out of memory" in scene["error"]

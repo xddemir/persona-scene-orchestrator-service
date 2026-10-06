@@ -8,8 +8,8 @@ render a 360° skybox for it, and writes the files Unity reads.
 persona → SceneSpec → prompt text → image-gen-service → out/<scene_id>/ → Unity
 ```
 
-**Status:** HTTP server, plus skybox generation as Slurm jobs on Pegasus. A prompt goes in, and the
-skybox comes back into `out/`. Persona → SceneSpec → prompt is not built yet.
+**Status:** the whole path runs. A persona goes in; a scene spec, its skybox (a Slurm job on
+Pegasus) and a manifest entry come out in `out/`, through the HTTP server or the batch runner.
 
 ## Install
 
@@ -79,11 +79,90 @@ persona (file or inline) → ChatbotV2Adapter → RuleSpecMapper → TemplatePro
   safe folder name, or an unreadable file.
 
 ```json
-{"P01": {"status": "ok", "files": ["scene_spec.json", "skybox_660120003.png", "skybox_660120003.json"],
+{"P01": {"status": "ok", "sky_mode": "panorama",
+         "files": ["scene_spec.json", "skybox_660120003.png", "skybox_660120003.json"],
          "updated_at": "2026-10-01T09:03:58Z"}}
 ```
 
 `/skyboxes` stays as the low-level way to try a hand-written prompt.
+
+### Two skies
+
+`sky_mode` says which sky Unity renders:
+
+- `"panorama"` (the default): the generated 360° image, `skybox` in the spec.
+- `"procedural"`: a sky drawn by a shader in the Unity project (colour gradient, sun, clouds), set
+  up from `procedural_sky` in the spec. No image is made and Pegasus isn't needed; `POST /scenes`
+  goes from `building_spec` straight to `ready`.
+
+`procedural_sky` is filled in on **every** spec, from the same persona, whichever mode was asked
+for. So the two modes can be compared for one participant, and a panorama that can't be made
+doesn't cost the scene: after the usual retry, the spec is written with `sky_mode` flipped to
+`"procedural"` and the manifest says `fallback`.
+
+| Manifest `status` | Meaning | `GET /scenes` |
+| --- | --- | --- |
+| `ok` | The scene as requested | `ready` |
+| `fallback` | No panorama; the spec on disk uses the procedural sky. `error` says why | `ready` |
+| `failed` | No usable scene (e.g. the persona won't convert). `error` says why | `failed` |
+
+The manifest's `sky_mode` is the mode of the spec on disk, so `"procedural"` for a fallback. Sun
+angle, colour temperature and fog are in `lighting`, which both modes read; `procedural_sky` holds
+only what the sky shader needs on top.
+
+### What shapes the procedural sky
+
+Every part of it follows from the persona, by the same four themes as the rest of the scene:
+
+| `procedural_sky` field | Driven by | Low → high |
+| --- | --- | --- |
+| `atmosphere_thickness` | neuroticism | Crisp horizon → haze reaching far up |
+| `sky_tint` (colour overhead) | biome (hue), neuroticism (saturation) | Vivid → muted |
+| `clouds.coverage` | neuroticism | Mostly clear → mostly covered |
+| `clouds.softness` | neuroticism | Crisp edges → diffuse |
+| `exposure` | extraversion | Dim → bright |
+| `sun_size`, `sun_halo` | extraversion | Small sun, faint glow → large sun, strong glow |
+| `clouds.brightness` | extraversion | Grey → white |
+| `clouds.detail` | openness | Smooth shapes → intricate |
+| `horizon_color` | openness (plus the sky's own colour) | Paler sky → a second, warmer colour |
+| `clouds.banding` | conscientiousness | Scattered puffs → regular rows along the wind |
+| `ground_color` | biome | |
+| `clouds.offset` | seed | Which clouds, not what kind |
+
+The clouds drift with `motion`'s wind (direction and strength), so they have no speed of their
+own. Agreeableness drives nothing, as elsewhere. The exact numbers are the `procedural_sky.*`
+entries of `LINEAR_RULES` in [`rule_mapper.py`](src/scene_orchestrator/mapping/rule_mapper.py).
+
+## Many participants at once
+
+The batch runner puts a queue of participants through the same pipeline, one after another:
+
+```bash
+python -m scene_orchestrator.batch queue.json --personas path/to/personas
+python -m scene_orchestrator.batch queue.json --personas path/to/personas --sky-mode procedural
+```
+
+```json
+[{"participant_id": "P01"},
+ {"participant_id": "P02", "sky_mode": "procedural"},
+ {"participant_id": "P07", "persona_file": "elsewhere/p07.json", "seed": 1234}]
+```
+
+A persona is `<personas>/<participant_id>.json` unless the entry names a `persona_file`. A persona
+whose `user.alias` isn't the entry's `participant_id` is recorded as `failed`, so nobody gets
+another participant's scene. One bad entry doesn't stop the rest.
+
+It can be stopped and started again at any point:
+
+- A scene already `ok` in the wanted sky mode is skipped.
+- A skybox job that was submitted but never seen to finish (the runner was killed, or the SSH
+  connection dropped) is recorded in the manifest as `slurm_job_id`. The next run waits for that
+  job and fetches its image; it doesn't submit a second one.
+- Everything else that isn't `ok`, fallbacks included, is redone.
+
+If panoramas are wanted and the shared connection isn't open, nothing is run (exit status 2),
+since otherwise every scene would be written as a fallback. The exit status is 0 when every scene
+is `ok`, and 1 when any is `failed` or `fallback`.
 
 ## How a skybox is made
 
@@ -106,7 +185,8 @@ the job's log. These are not retried, because repeating can't help: a missing co
 Slurm refuses (partition, account). A job still unfinished after `job_timeout_s` is cancelled.
 
 Losing the connection mid-job fails the skybox, but the job keeps running on Pegasus, and its files
-still land in `/netscratch/demir/image-gen/out/`.
+still land in `/netscratch/demir/image-gen/out/`. For a scene, the job's id stays in the manifest,
+and generating that scene again (same seed) picks the job up instead of submitting a new one.
 
 ## Configuration
 
@@ -117,7 +197,9 @@ limit. Point `SCENE_ORCHESTRATOR_CONFIG` at another file to use different settin
 ## Output
 
 ```text
-out/<scene_id>/skybox_<seed>.png
+out/manifest.json                   # one entry per scene; read this first
+out/<scene_id>/scene_spec.json
+out/<scene_id>/skybox_<seed>.png    # panorama scenes only
 out/<scene_id>/skybox_<seed>.json   # image-gen's sidecar: prompt, seed, model + revision, steps, ...
 ```
 
@@ -143,8 +225,8 @@ A test fails while the committed schema is out of date.
 
 | Route | Purpose |
 | --- | --- |
-| `POST /scenes` | `{persona_file \| persona, seed?}` → `202` + `{scene_id, status}`; the whole pipeline in the background |
-| `GET /scenes/{participant_id}` | Everything for one participant: `queued` → `building_spec` → `generating_image` → `ready` \| `failed`, Slurm progress, persona, spec, files, error |
+| `POST /scenes` | `{persona_file \| persona, seed?, sky_mode?}` → `202` + `{scene_id, status}`; the whole pipeline in the background |
+| `GET /scenes/{participant_id}` | Everything for one participant: `queued` → `building_spec` → `generating_image` (panorama only) → `ready` \| `failed`, Slurm progress, persona, spec, files, error |
 | `GET /scenes/{participant_id}/files/{name}` | Download one file listed in `files`, e.g. the skybox PNG. Unlisted names get 404 |
 | `POST /skyboxes` | `{prompt, seed, scene_id}` → `202` + job; generation runs in the background |
 | `GET /skyboxes/{id}` | `queued` → `generating_image` → `ready` \| `failed`, with progress, files or error |
@@ -152,6 +234,58 @@ A test fails while the committed schema is out of date.
 | `GET /docs` | Swagger UI; `/` redirects here |
 
 Job state is in memory and lost on restart. The files in `out/` are the durable record.
+
+## Test it with Unity
+
+The Unity project (`UnityRelaxVR`) only downloads scenes; it never creates them. So a test is
+always: create the scene on the server, then fetch it in Unity.
+
+### Procedural sky (no VPN, no cluster, plain Windows)
+
+1. **Unity, once:** open `Assets/Scenes/ExperimentScene.unity`, click
+   **Tools > Persona Scene > Set Up Experiment Scene**, save with Ctrl+S.
+2. **Start the server** in a terminal at this repo's root, and leave it open:
+
+   ```powershell
+   .venv\Scripts\python -m uvicorn scene_orchestrator.api.app:app --host 127.0.0.1 --port 8001
+   ```
+
+   A `WARNING: Pegasus: ...` line is expected. `Uvicorn running on http://127.0.0.1:8001` means
+   it's up.
+3. **Create the scene:** open <http://127.0.0.1:8001/docs>, click **POST /scenes**, then
+   **Try it out**, put this in the request body and click **Execute**:
+
+   ```json
+   {"persona_file": "fixtures/personas/chatbot/P01.json", "sky_mode": "procedural"}
+   ```
+
+   The answer is `{"scene_id": "P01", "status": "queued"}`. That's normal: the scene is built in
+   the background.
+4. **Check it's ready:** open <http://127.0.0.1:8001/scenes/P01>. It should show
+   `"status": "ready"`, `"sky_mode": "procedural"` and `"files": ["scene_spec.json"]`.
+5. **Fetch in Unity:** open `Assets/Scenes/BasicScene.unity`, press Play, type `P01`, press
+   **Fetch**. The experiment scene loads by itself.
+6. **Confirm:** the Console has a line starting `[SceneBuilder] P01: snowy_valley, sky: procedural`.
+   The sky is a colour gradient with a round sun and slowly drifting clouds, not a photo.
+
+### Generated sky (needs the VPN and the cluster)
+
+Run the server in WSL with the shared SSH connection open (see [Run](#run)), then repeat steps
+3 to 6 with `"sky_mode": "panorama"`. Step 4 takes minutes: wait until it says `ready` and lists a
+`skybox_<seed>.png`. The Console line then says `sky: image skybox_<seed>.png`.
+
+Each POST replaces the participant's previous scene, so switching sky is: POST again with the
+other `sky_mode`, then Fetch again.
+
+### If something looks wrong
+
+| What you see | What it means |
+| --- | --- |
+| Unity: "No scene for participant P01" | The scene wasn't created. Do step 3 |
+| Unity: "Orchestrator not reachable. Using P01's files from an earlier fetch" | The server isn't running, so you're looking at old files. Do step 2 |
+| Unity: "ready, with Unity's own sky: the 360 image could not be made" | You asked for `panorama` but the cluster couldn't be reached, so it fell back to procedural |
+| Console: `sky: none, the scene's own sky kept` | An old spec from before sky modes. Create the scene again (step 3) |
+| Pressing Play directly in `ExperimentScene` | Nothing is fetched; it shows the files of the last fetch |
 
 ## Tests
 

@@ -2,16 +2,30 @@
 
 from __future__ import annotations
 
+import colorsys
 import itertools
 import json
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
 from scene_orchestrator.adapters import ChatbotV2Adapter
 from scene_orchestrator.mapping import RuleSpecMapper, SpecMapper, rules_markdown
-from scene_orchestrator.mapping.rule_mapper import BIOME_TIERS, BIOMES
+from scene_orchestrator.mapping.rule_mapper import (
+    BIOME_GROUND_COLOR,
+    BIOME_SKY_HUE,
+    BIOME_TIERS,
+    BIOMES,
+    HORIZON_ACCENT,
+    HORIZON_VALUE,
+    LINEAR_RULES,
+    SKY_TINT_SATURATION,
+    SKY_TINT_VALUE,
+    _procedural_sky,
+)
 from scene_orchestrator.models import PersonaProfile, SceneSpec, Traits
+from scene_orchestrator.models.scene_spec import Biome
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "personas" / "chatbot"
 MAPPER: SpecMapper = RuleSpecMapper()  # also checks it fits the protocol
@@ -90,6 +104,53 @@ def test_more_open_p01_gets_more_prop_types(p01, p02):
     assert len(p02.props) == 3  # 2 + round(3 * 0.45)
 
 
+def _saturation(rgb: tuple[float, float, float]) -> float:
+    return colorsys.rgb_to_hsv(*rgb)[1]
+
+
+def test_anxious_p01_has_a_thicker_atmosphere(p01, p02):
+    assert p01.procedural_sky.atmosphere_thickness > p02.procedural_sky.atmosphere_thickness
+    assert p01.procedural_sky.atmosphere_thickness == 1.72  # 0.7 + (2.2 - 0.7) * 0.68
+
+
+def test_introverted_p01_has_a_lower_exposure_and_a_smaller_sun(p01, p02):
+    assert p01.procedural_sky.exposure < p02.procedural_sky.exposure
+    assert p01.procedural_sky.exposure == 0.948  # 0.7 + (1.5 - 0.7) * 0.31
+    assert p01.procedural_sky.sun_size < p02.procedural_sky.sun_size
+
+
+def test_anxious_p01_has_a_less_saturated_sky(p01, p02):
+    assert _saturation(p01.procedural_sky.sky_tint) < _saturation(p02.procedural_sky.sky_tint)
+
+
+def test_anxious_p01_has_more_and_softer_cloud(p01, p02):
+    assert p01.procedural_sky.clouds.coverage > p02.procedural_sky.clouds.coverage
+    assert p01.procedural_sky.clouds.coverage == 0.54  # 0.20 + (0.70 - 0.20) * 0.68
+    assert p01.procedural_sky.clouds.softness > p02.procedural_sky.clouds.softness
+
+
+def test_outgoing_p02_has_brighter_clouds_and_a_stronger_sun_glow(p01, p02):
+    assert p02.procedural_sky.clouds.brightness > p01.procedural_sky.clouds.brightness
+    assert p02.procedural_sky.sun_halo > p01.procedural_sky.sun_halo
+    assert p02.procedural_sky.sun_halo == pytest.approx(0.6175, abs=0.001)  # 0.15 + 0.55 * 0.85
+
+
+def test_more_open_p01_has_more_intricate_clouds(p01, p02):
+    assert p01.procedural_sky.clouds.detail > p02.procedural_sky.clouds.detail
+
+
+def test_more_orderly_p02_has_more_regular_cloud_rows(p01, p02):
+    assert p01.procedural_sky.clouds.banding == 0.55  # conscientiousness itself
+    assert p02.procedural_sky.clouds.banding == 0.7
+
+
+def test_the_procedural_sky_is_filled_in_for_a_panorama_scene(p01, p02):
+    for spec in (p01, p02):
+        assert spec.sky_mode == "panorama"
+        assert spec.procedural_sky.ground_color == BIOME_GROUND_COLOR[spec.biome]
+        assert spec.skybox.rotation_deg == 0
+
+
 def test_p01_values_follow_the_table(p01):
     # neuroticism 0.68 -> 0.15 + (0.80 - 0.15) * 0.68
     assert p01.spatial.enclosure == 0.592
@@ -132,6 +193,58 @@ def test_agreeableness_is_unmapped():
     a = MAPPER.map(_persona(agreeableness=0.0), 7, "t")
     b = MAPPER.map(_persona(agreeableness=1.0), 7, "t")
     assert a == b
+
+
+def test_the_biome_sets_the_hue_and_neuroticism_the_saturation():
+    calm = MAPPER.map(_persona(neuroticism=0.0), 3, "t")
+    anxious = MAPPER.map(_persona(neuroticism=1.0), 3, "t")
+    assert calm.biome == anxious.biome  # openness and seed are the same
+
+    for spec, scale in ((calm, 1.0), (anxious, 0.45)):
+        hue, saturation, value = colorsys.rgb_to_hsv(*spec.procedural_sky.sky_tint)
+        assert hue * 360 == pytest.approx(BIOME_SKY_HUE[spec.biome], abs=1.0)
+        assert saturation == pytest.approx(SKY_TINT_SATURATION * scale, abs=0.005)
+        assert value == pytest.approx(SKY_TINT_VALUE, abs=0.005)
+
+
+def test_the_horizon_is_a_paler_sky_until_openness_adds_a_second_colour():
+    plain = MAPPER.map(_persona(openness=0.0), 3, "t").procedural_sky
+    hue, saturation, value = colorsys.rgb_to_hsv(*plain.horizon_color)
+    tint_hue, tint_saturation, _ = colorsys.rgb_to_hsv(*plain.sky_tint)
+    assert hue == pytest.approx(tint_hue, abs=0.01)  # the same colour...
+    assert saturation < tint_saturation  # ...paler...
+    assert value == pytest.approx(HORIZON_VALUE, abs=0.005)  # ...and brighter
+
+    # Compared within one biome: openness also picks the biome, and so the hue.
+    def horizon(openness: float):
+        traits = Traits(openness=openness, conscientiousness=0.5, extraversion=0.5,
+                        agreeableness=0.5, neuroticism=0.5)
+        return _procedural_sky("lakeside", traits, (0.0, 0.0)).horizon_color
+
+    red, _, blue = horizon(0.0)
+    open_red, _, open_blue = horizon(1.0)
+    assert open_red > red and open_blue < blue  # towards HORIZON_ACCENT, a warm colour
+    half_way = tuple(round((a + b) / 2, 3) for a, b in zip(horizon(0.0), HORIZON_ACCENT))
+    assert horizon(1.0) == pytest.approx(half_way, abs=0.001)  # accent 0.5 at openness 1
+
+
+def test_the_seed_moves_the_clouds_and_nothing_else_in_the_sky():
+    a = MAPPER.map(_fixture("P01"), 1, "p01").procedural_sky
+    b = MAPPER.map(_fixture("P01"), 2, "p01").procedural_sky
+    assert a.clouds.offset != b.clouds.offset
+    assert a.clouds.model_copy(update={"offset": b.clouds.offset}) == b.clouds
+    assert (a.sun_halo, a.exposure, a.atmosphere_thickness) == (
+        b.sun_halo, b.exposure, b.atmosphere_thickness
+    )
+
+
+def test_every_trait_but_agreeableness_shapes_the_sky():
+    driving = {r.trait for r in LINEAR_RULES if r.parameter.startswith("procedural_sky.")}
+    assert driving == {"neuroticism", "extraversion", "openness", "conscientiousness"}
+
+
+def test_every_biome_has_a_sky_hue_and_a_ground_color():
+    assert set(BIOME_SKY_HUE) == set(BIOME_GROUND_COLOR) == set(BIOMES) == set(get_args(Biome))
 
 
 def test_more_enclosure_means_more_props_closer_in():

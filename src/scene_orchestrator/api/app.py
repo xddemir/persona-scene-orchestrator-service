@@ -129,7 +129,7 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc))
 
         try:
-            job = scenes.submit(SceneJob(scene_id, body.seed, raw))
+            job = scenes.submit(SceneJob(scene_id, body.seed, raw, body.sky_mode))
         except SceneInProgress:
             raise HTTPException(status_code=409, detail=f"{scene_id} is already being generated")
         return SceneAccepted(scene_id=job.scene_id, status=job.status)
@@ -149,7 +149,9 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"unknown scene {scene_id!r}")
         return SceneResponse(
             scene_id=scene_id,
-            status=SceneStatus.READY if entry["status"] == "ok" else SceneStatus.FAILED,
+            status=(
+                SceneStatus.READY if entry["status"] in ("ok", "fallback") else SceneStatus.FAILED
+            ),
             spec=_read_spec(config.out_dir, scene_id),
             files=entry.get("files", []),
             error=entry.get("error"),

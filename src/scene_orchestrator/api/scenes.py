@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from queue import Empty, Queue
 from typing import Any
 
-from ..models import PersonaProfile, SceneSpec
+from ..models import PersonaProfile, SceneSpec, SkyMode
 from ..pipeline import ScenePipeline
 from ..outputs import utc_now_iso
 from .models import SceneStatus
@@ -33,6 +33,7 @@ class SceneJob:
     scene_id: str  # = the participant id: one scene per participant
     seed: int | None
     raw_persona: dict[str, Any]
+    sky_mode: SkyMode = "panorama"
     status: SceneStatus = SceneStatus.QUEUED
     detail: str | None = None
     persona: PersonaProfile | None = None
@@ -115,9 +116,12 @@ class SceneRunner:
         # worker thread.
         try:
             outcome = self._pipeline.run(
-                job.raw_persona, job.scene_id, job.seed, on_stage, on_progress, on_built
+                job.raw_persona, job.scene_id, job.seed, job.sky_mode,
+                on_stage, on_progress, on_built,
             )
-            ok, files, error = outcome.ok, outcome.files, outcome.error
+            # A fallback to the procedural sky is ready too, with the reason
+            # for it in error.
+            ok, files, error = outcome.usable, outcome.files, outcome.error
             persona, spec = outcome.persona, outcome.spec
         except Exception as exc:  # noqa: BLE001
             ok, files, error = False, [], f"{type(exc).__name__}: {exc}"

@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from scene_orchestrator.models import PersonaProfile, SceneSpec
+from scene_orchestrator.models import (
+    Lighting,
+    Motion,
+    PersonaProfile,
+    ProceduralSky,
+    SceneSpec,
+    SkyClouds,
+)
 from scene_orchestrator.models.schema import scene_spec_schema_text
 
 SCHEMA_FILE = Path(__file__).resolve().parent.parent / "schema" / "scene_spec.schema.json"
@@ -30,6 +37,13 @@ SPEC = {
     "seed": 1234,
     "biome": "forest_clearing",
     "skybox": {"resolution": [2048, 1024]},
+    "procedural_sky": {
+        "atmosphere_thickness": 1.4, "sky_tint": [0.5, 0.6, 0.8],
+        "horizon_color": [0.85, 0.88, 0.9], "ground_color": [0.3, 0.35, 0.2],
+        "exposure": 1.1, "sun_size": 0.05, "sun_halo": 0.4,
+        "clouds": {"coverage": 0.5, "softness": 0.6, "brightness": 0.8, "detail": 0.7,
+                   "banding": 0.3, "offset": [12.5, 80.0]},
+    },
     "terrain": {
         "profile": "gentle_slope",
         "ground_material": "moss",
@@ -97,7 +111,34 @@ def test_a_valid_scene_spec_builds():
     assert spec.spec_version == "0.1"
     assert spec.skybox.projection == "equirect"
     assert spec.skybox.resolution == (2048, 1024)
+    assert spec.skybox.rotation_deg == 0
+    assert spec.sky_mode == "panorama"
+    assert spec.procedural_sky.sky_tint == (0.5, 0.6, 0.8)
     assert spec.props[1].cluster_count == 3
+
+
+def test_a_spec_without_a_procedural_sky_is_rejected():
+    """It is the fallback for a missing panorama, so it is never optional."""
+    spec = {key: value for key, value in SPEC.items() if key != "procedural_sky"}
+    with pytest.raises(ValidationError, match="procedural_sky"):
+        SceneSpec.model_validate(spec)
+
+
+def test_the_procedural_sky_repeats_nothing_from_lighting():
+    """Sun angle, colour temperature and fog are stated once, for both sky modes."""
+    assert not set(ProceduralSky.model_fields) & set(Lighting.model_fields)
+
+
+def test_clouds_take_their_wind_from_motion():
+    """They drift with the scene's wind, so they carry no speed or direction."""
+    assert not set(SkyClouds.model_fields) & set(Motion.model_fields)
+    assert not any("wind" in name or "speed" in name for name in SkyClouds.model_fields)
+
+
+def test_a_procedural_sky_without_clouds_is_rejected():
+    sky = {key: value for key, value in SPEC["procedural_sky"].items() if key != "clouds"}
+    with pytest.raises(ValidationError, match="clouds"):
+        SceneSpec.model_validate({**SPEC, "procedural_sky": sky})
 
 
 @pytest.mark.parametrize(
@@ -116,12 +157,35 @@ def test_a_valid_scene_spec_builds():
         ("motion.wind_strength", 1.01),
         ("motion.wind_direction_deg", -1),
         ("skybox.resolution", [0, 1024]),
+        ("skybox.rotation_deg", 361),
+        ("procedural_sky.atmosphere_thickness", 0.4),
+        ("procedural_sky.atmosphere_thickness", 2.6),
+        ("procedural_sky.sky_tint", [0.5, 0.6, 1.2]),
+        ("procedural_sky.sky_tint", [0.5, 0.6]),
+        ("procedural_sky.ground_color", [-0.1, 0.3, 0.2]),
+        ("procedural_sky.exposure", 2.1),
+        ("procedural_sky.sun_size", 0.6),
+        ("procedural_sky.horizon_color", [0.5, 0.6, 1.2]),
+        ("procedural_sky.sun_halo", 1.1),
+        ("procedural_sky.clouds.coverage", 1.1),
+        ("procedural_sky.clouds.softness", -0.1),
+        ("procedural_sky.clouds.brightness", 1.5),
+        ("procedural_sky.clouds.detail", -0.2),
+        ("procedural_sky.clouds.banding", 2),
+        ("procedural_sky.clouds.offset", [12.5, 100.5]),
+        ("procedural_sky.clouds.offset", [12.5]),
         ("seed", -1),
     ],
 )
 def test_out_of_range_values_are_rejected(field, value):
+    SceneSpec.model_validate(SPEC)  # so the one changed field is what fails
     with pytest.raises(ValidationError):
         SceneSpec.model_validate(_with(SPEC, field, value))
+
+
+def test_an_unknown_sky_mode_is_rejected():
+    with pytest.raises(ValidationError, match="sky_mode"):
+        SceneSpec.model_validate(_with(SPEC, "sky_mode", "hdri"))
 
 
 def test_an_unknown_biome_is_rejected():

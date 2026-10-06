@@ -108,6 +108,120 @@
       "title": "Motion",
       "type": "object"
     },
+    "ProceduralSky": {
+      "additionalProperties": false,
+      "description": "Parameters of the procedural sky shader in the Unity project: a colour\ngradient from horizon to zenith, the ground below, a sun with its glow,\nand clouds.\n\nNo sun angle, colour temperature or fog here: those are in `lighting`,\nwhich both sky modes read.",
+      "properties": {
+        "atmosphere_thickness": {
+          "maximum": 2.5,
+          "minimum": 0.5,
+          "title": "Atmosphere Thickness",
+          "type": "number"
+        },
+        "sky_tint": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            }
+          ],
+          "title": "Sky Tint",
+          "type": "array"
+        },
+        "horizon_color": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            }
+          ],
+          "title": "Horizon Color",
+          "type": "array"
+        },
+        "ground_color": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            }
+          ],
+          "title": "Ground Color",
+          "type": "array"
+        },
+        "exposure": {
+          "maximum": 2.0,
+          "minimum": 0.5,
+          "title": "Exposure",
+          "type": "number"
+        },
+        "sun_size": {
+          "maximum": 0.5,
+          "minimum": 0.01,
+          "title": "Sun Size",
+          "type": "number"
+        },
+        "sun_halo": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Sun Halo",
+          "type": "number"
+        },
+        "clouds": {
+          "$ref": "#/$defs/SkyClouds"
+        }
+      },
+      "required": [
+        "atmosphere_thickness",
+        "sky_tint",
+        "horizon_color",
+        "ground_color",
+        "exposure",
+        "sun_size",
+        "sun_halo",
+        "clouds"
+      ],
+      "title": "ProceduralSky",
+      "type": "object"
+    },
     "Prop": {
       "additionalProperties": false,
       "properties": {
@@ -186,6 +300,70 @@
       "title": "Prop",
       "type": "object"
     },
+    "SkyClouds": {
+      "additionalProperties": false,
+      "description": "Clouds drawn by the sky shader from noise. They drift with `motion`'s\nwind, so there is no speed or direction of their own here.",
+      "properties": {
+        "coverage": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Coverage",
+          "type": "number"
+        },
+        "softness": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Softness",
+          "type": "number"
+        },
+        "brightness": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Brightness",
+          "type": "number"
+        },
+        "detail": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Detail",
+          "type": "number"
+        },
+        "banding": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Banding",
+          "type": "number"
+        },
+        "offset": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "maximum": 100.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "maximum": 100.0,
+              "minimum": 0.0,
+              "type": "number"
+            }
+          ],
+          "title": "Offset",
+          "type": "array"
+        }
+      },
+      "required": [
+        "coverage",
+        "softness",
+        "brightness",
+        "detail",
+        "banding",
+        "offset"
+      ],
+      "title": "SkyClouds",
+      "type": "object"
+    },
     "Skybox": {
       "additionalProperties": false,
       "properties": {
@@ -234,6 +412,13 @@
           ],
           "title": "Resolution",
           "type": "array"
+        },
+        "rotation_deg": {
+          "default": 0.0,
+          "maximum": 360.0,
+          "minimum": 0.0,
+          "title": "Rotation Deg",
+          "type": "number"
         }
       },
       "required": [
@@ -357,8 +542,20 @@
       "title": "Biome",
       "type": "string"
     },
+    "sky_mode": {
+      "default": "panorama",
+      "enum": [
+        "panorama",
+        "procedural"
+      ],
+      "title": "Sky Mode",
+      "type": "string"
+    },
     "skybox": {
       "$ref": "#/$defs/Skybox"
+    },
+    "procedural_sky": {
+      "$ref": "#/$defs/ProceduralSky"
     },
     "terrain": {
       "$ref": "#/$defs/Terrain"
@@ -395,6 +592,7 @@
     "seed",
     "biome",
     "skybox",
+    "procedural_sky",
     "terrain",
     "props",
     "lighting",

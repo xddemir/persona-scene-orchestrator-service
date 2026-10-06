@@ -20,15 +20,23 @@ class ImageGenError(Exception):
     """One failed attempt.
 
     `retryable` is False when sending the same request again cannot help,
-    e.g. image-gen rejected the request itself.
+    e.g. image-gen rejected the request itself. `pending_job_id` names a Slurm
+    job this attempt left running on Pegasus, so that a later run can pick it
+    up instead of submitting another.
     """
 
     def __init__(
-        self, message: str, *, retryable: bool = True, status_code: int | None = None
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        status_code: int | None = None,
+        pending_job_id: str | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.status_code = status_code
+        self.pending_job_id = pending_job_id
 
 
 class SkyboxRequest(BaseModel):
@@ -46,6 +54,8 @@ class SkyboxResult:
     png: Path | None = None
     sidecar: Path | None = None
     error: str | None = None
+    # On failure: a Slurm job that is still running on Pegasus, if any.
+    pending_job_id: str | None = None
 
 
 class ImageGenStatus(BaseModel):

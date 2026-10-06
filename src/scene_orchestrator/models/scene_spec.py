@@ -7,6 +7,13 @@ validates the same structure against schema/scene_spec.schema.json.
 Every numeric field is range-constrained, so an out-of-range value fails here
 rather than producing a strange scene in the headset. Props name assets from
 the curated Unity library; no geometry is ever generated.
+
+The sky comes in two modes. "panorama" is the generated 360 image (`skybox`);
+"procedural" is a sky drawn by a shader in Unity (`procedural_sky`).
+`procedural_sky` is filled in on every spec, whichever mode is chosen, so Unity
+always has a sky to fall back on. `lighting` belongs to both modes: sun angle,
+colour temperature and fog are stated there once, never repeated in
+`procedural_sky`.
 """
 
 from __future__ import annotations
@@ -20,11 +27,14 @@ from ..outputs import SCENE_ID_PATTERN
 Unit = Annotated[float, Field(ge=0.0, le=1.0)]
 Degrees = Annotated[float, Field(ge=0.0, le=360.0)]
 Pixels = Annotated[int, Field(gt=0)]
+Rgb = tuple[Unit, Unit, Unit]
+CloudOffset = Annotated[float, Field(ge=0.0, le=100.0)]
 
 Biome = Literal[
     "coastal_pine", "open_meadow", "forest_clearing", "snowy_valley",
     "lakeside", "rocky_shore", "birch_grove", "alpine_basin",
 ]
+SkyMode = Literal["panorama", "procedural"]
 
 
 class _Strict(BaseModel):
@@ -36,6 +46,40 @@ class Skybox(_Strict):
     prompt: str | None = None  # derived from this spec
     projection: Literal["equirect"] = "equirect"
     resolution: tuple[Pixels, Pixels]  # (width, height)
+    rotation_deg: Degrees = 0.0  # turns the panorama about the vertical axis
+
+
+class SkyClouds(_Strict):
+    """Clouds drawn by the sky shader from noise. They drift with `motion`'s
+    wind, so there is no speed or direction of their own here."""
+
+    coverage: Unit  # 0 clear sky .. 1 overcast
+    softness: Unit  # 0 crisp edges .. 1 diffuse
+    brightness: Unit  # 0 grey .. 1 white
+    detail: Unit  # 0 smooth shapes .. 1 intricate
+    banding: Unit  # 0 scattered puffs .. 1 regular rows along the wind
+    # Where in the noise field the clouds are taken from: from the seed, so
+    # two participants with like traits still get different clouds.
+    offset: tuple[CloudOffset, CloudOffset]
+
+
+class ProceduralSky(_Strict):
+    """Parameters of the procedural sky shader in the Unity project: a colour
+    gradient from horizon to zenith, the ground below, a sun with its glow,
+    and clouds.
+
+    No sun angle, colour temperature or fog here: those are in `lighting`,
+    which both sky modes read.
+    """
+
+    atmosphere_thickness: float = Field(ge=0.5, le=2.5)  # how far up the horizon's haze reaches
+    sky_tint: Rgb  # the colour overhead
+    horizon_color: Rgb
+    ground_color: Rgb
+    exposure: float = Field(ge=0.5, le=2.0)
+    sun_size: float = Field(ge=0.01, le=0.5)
+    sun_halo: Unit  # strength of the glow around the sun
+    clouds: SkyClouds
 
 
 class Water(_Strict):
@@ -92,7 +136,9 @@ class SceneSpec(_Strict):
     scene_id: str = Field(pattern=SCENE_ID_PATTERN)  # also the folder under out/
     seed: int = Field(ge=0)  # drives all procedural placement
     biome: Biome
+    sky_mode: SkyMode = "panorama"  # which of the next two Unity renders
     skybox: Skybox
+    procedural_sky: ProceduralSky
     terrain: Terrain
     props: list[Prop]
     lighting: Lighting

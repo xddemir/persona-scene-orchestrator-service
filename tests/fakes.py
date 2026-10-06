@@ -31,7 +31,8 @@ class FakePegasus:
 
     Each submitted job plays the next script in `jobs` (the last script is
     reused once they run out): the states successive sacct calls report, the
-    last one repeating.
+    last one repeating. `running` holds jobs already on the cluster, submitted
+    by an earlier run: job id -> such a script.
     """
 
     def __init__(
@@ -41,6 +42,7 @@ class FakePegasus:
         connected=True,
         sbatch_error=None,
         lose_connection=False,
+        running=None,
     ):
         self.scripts = list(jobs)
         self.connected = connected
@@ -48,7 +50,9 @@ class FakePegasus:
         self.lose_connection = lose_connection
         self.submitted: list[str] = []  # job scripts, as sbatch received them
         self.cancelled: list[str] = []
-        self._states: dict[str, list[str]] = {}
+        self._states: dict[str, list[str]] = {
+            job_id: list(states) for job_id, states in (running or {}).items()
+        }
 
     def check(self):
         return None if self.connected else NOT_CONNECTED
