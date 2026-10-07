@@ -63,9 +63,13 @@ class SceneRunner:
             self._thread.join(timeout=timeout)
             self._thread = None
 
-    def submit(self, job: SceneJob) -> SceneJob:
+    def submit(self, job: SceneJob, *, replace: bool = True) -> SceneJob:
+        """With replace=False, a scene that already has a job keeps it: that
+        job is returned and nothing is queued."""
         with self._lock:
             current = self._jobs.get(job.scene_id)
+            if current is not None and not replace:
+                return dataclasses.replace(current)
             if current is not None and current.status in _ACTIVE:
                 # Two runs would write the same folder and manifest entry.
                 raise SceneInProgress(job.scene_id)
@@ -78,6 +82,15 @@ class SceneRunner:
         with self._lock:
             job = self._jobs.get(scene_id)
             return dataclasses.replace(job) if job else None
+
+    def wait(self, scene_id: str, timeout: float) -> SceneJob | None:
+        """The scene's job once it has finished, or as it stands after `timeout` seconds."""
+        deadline = time.monotonic() + timeout
+        while True:
+            job = self.get(scene_id)
+            if job is None or job.status not in _ACTIVE or time.monotonic() >= deadline:
+                return job
+            time.sleep(0.02)
 
     def wait_idle(self, timeout: float = 30.0) -> bool:
         """Block until no scene is queued or running. For tests and scripts."""

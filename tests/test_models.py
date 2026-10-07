@@ -15,6 +15,7 @@ from scene_orchestrator.models import (
     ProceduralSky,
     SceneSpec,
     SkyClouds,
+    Weather,
 )
 from scene_orchestrator.models.schema import scene_spec_schema_text
 
@@ -39,8 +40,10 @@ SPEC = {
     "skybox": {"resolution": [2048, 1024]},
     "procedural_sky": {
         "atmosphere_thickness": 1.4, "sky_tint": [0.5, 0.6, 0.8],
-        "horizon_color": [0.85, 0.88, 0.9], "ground_color": [0.3, 0.35, 0.2],
+        "horizon_color": [0.85, 0.88, 0.9], "twilight_color": [1.0, 0.6, 0.5],
+        "ground_color": [0.3, 0.35, 0.2],
         "exposure": 1.1, "sun_size": 0.05, "sun_halo": 0.4,
+        "stars": {"density": 0.8, "brightness": 0.6, "milky_way": 0.7},
         "clouds": {"coverage": 0.5, "softness": 0.6, "brightness": 0.8, "detail": 0.7,
                    "banding": 0.3, "offset": [12.5, 80.0]},
     },
@@ -55,8 +58,10 @@ SPEC = {
         {"asset": "boulder", "count": 12, "distribution": "clustered",
          "exclude_radius": 6.0, "cluster_count": 3},
     ],
-    "lighting": {"sun_elevation_deg": 12, "sun_azimuth_deg": 95,
-                 "color_temperature_k": 3200, "fog_density": 0.04},
+    "lighting": {"sun_elevation_deg": 12, "sun_azimuth_deg": 95, "time_of_day": "morning",
+                 "moon_elevation_deg": 40, "moon_azimuth_deg": 250, "moon_phase": 0.7,
+                 "color_temperature_k": 3200, "intensity": 0.6, "fog_density": 0.04},
+    "weather": {"precipitation": 0.0, "kind": "rain"},
     "spatial": {"enclosure": 0.7, "sightline_distance_m": 40,
                 "prospect_refuge_bias": "refuge"},
     "audio": [{"layer": "birdsong", "gain": 0.4, "event_rate_per_min": 6},
@@ -108,7 +113,7 @@ def test_an_invalid_persona_is_rejected(field, value):
 
 def test_a_valid_scene_spec_builds():
     spec = SceneSpec.model_validate(SPEC)
-    assert spec.spec_version == "0.1"
+    assert spec.spec_version == "0.2"
     assert spec.skybox.projection == "equirect"
     assert spec.skybox.resolution == (2048, 1024)
     assert spec.skybox.rotation_deg == 0
@@ -124,9 +129,27 @@ def test_a_spec_without_a_procedural_sky_is_rejected():
         SceneSpec.model_validate(spec)
 
 
-def test_the_procedural_sky_repeats_nothing_from_lighting():
-    """Sun angle, colour temperature and fog are stated once, for both sky modes."""
-    assert not set(ProceduralSky.model_fields) & set(Lighting.model_fields)
+def test_the_procedural_sky_repeats_nothing_from_lighting_or_weather():
+    """Sun, moon, the light's colour, fog and rain are stated once, for both sky modes."""
+    shared = set(Lighting.model_fields) | set(Weather.model_fields)
+    assert not set(ProceduralSky.model_fields) & shared
+
+
+def test_the_sun_may_stand_below_the_horizon():
+    night = _with(_with(SPEC, "lighting.sun_elevation_deg", -25), "lighting.time_of_day", "night")
+    assert SceneSpec.model_validate(night).lighting.sun_elevation_deg == -25
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [(None, "weather"), ("lighting", "time_of_day"), ("lighting", "moon_phase"),
+     ("procedural_sky", "stars"), ("procedural_sky", "twilight_color")],
+)
+def test_a_spec_without_its_weather_or_night_sky_is_rejected(section, field):
+    spec = copy.deepcopy(SPEC)
+    del (spec[section] if section else spec)[field]
+    with pytest.raises(ValidationError, match=field):
+        SceneSpec.model_validate(spec)
 
 
 def test_clouds_take_their_wind_from_motion():
@@ -145,9 +168,18 @@ def test_a_procedural_sky_without_clouds_is_rejected():
     ("field", "value"),
     [
         ("lighting.sun_elevation_deg", 91),
+        ("lighting.sun_elevation_deg", -91),
         ("lighting.sun_azimuth_deg", 361),
+        ("lighting.time_of_day", "dusk"),
+        ("lighting.moon_elevation_deg", -1),
+        ("lighting.moon_azimuth_deg", 361),
+        ("lighting.moon_phase", 1.1),
         ("lighting.color_temperature_k", 1500),
+        ("lighting.color_temperature_k", 10001),
+        ("lighting.intensity", 1.2),
         ("lighting.fog_density", 0.2),
+        ("weather.precipitation", 1.1),
+        ("weather.kind", "hail"),
         ("spatial.enclosure", 1.5),
         ("spatial.sightline_distance_m", 5),
         ("terrain.water.motion", -0.1),
@@ -166,7 +198,11 @@ def test_a_procedural_sky_without_clouds_is_rejected():
         ("procedural_sky.exposure", 2.1),
         ("procedural_sky.sun_size", 0.6),
         ("procedural_sky.horizon_color", [0.5, 0.6, 1.2]),
+        ("procedural_sky.twilight_color", [1.2, 0.6, 0.5]),
         ("procedural_sky.sun_halo", 1.1),
+        ("procedural_sky.stars.density", 1.1),
+        ("procedural_sky.stars.brightness", -0.1),
+        ("procedural_sky.stars.milky_way", 2),
         ("procedural_sky.clouds.coverage", 1.1),
         ("procedural_sky.clouds.softness", -0.1),
         ("procedural_sky.clouds.brightness", 1.5),

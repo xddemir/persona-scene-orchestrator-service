@@ -12,6 +12,8 @@ from scene_orchestrator.adapters import ChatbotV2Adapter, PersonaAdapter, Person
 from scene_orchestrator.models import PersonaProfile
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "personas" / "chatbot"
+# Every fixture but P03, which is missing a dimension on purpose.
+COMPLETE = sorted(path.stem for path in FIXTURES.glob("*.json") if path.stem != "P03")
 
 
 def _load(alias: str) -> dict:
@@ -42,7 +44,7 @@ def test_the_inversion_separates_opposite_participants():
 # -- round trip -------------------------------------------------------------
 
 
-@pytest.mark.parametrize("alias", ["P01", "P02"])
+@pytest.mark.parametrize("alias", COMPLETE)
 def test_complete_fixtures_become_valid_profiles(alias):
     persona = _adapt(_load(alias))
     assert isinstance(persona, PersonaProfile)

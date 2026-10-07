@@ -1,0 +1,14 @@
+{
+  "session_id": "c2f1a7e0-5b3d-4c1e-9a8f-01d4e6b7a009",
+  "user": {"alias": "P09", "completed_at": "2026-09-30T11:36:14Z"},
+  "assessment": {
+    "instrument": "conversational_bigfive_v2",
+    "dimensions": [
+      {"name": "Openness to Experience", "score": 84, "scale_max": 100, "certainty": "high"},
+      {"name": "Conscientiousness", "score": 30, "scale_max": 100, "certainty": "medium"},
+      {"name": "Extraversion", "score": 28, "scale_max": 100, "certainty": "medium"},
+      {"name": "Agreeableness", "score": 70, "scale_max": 100, "certainty": "high"},
+      {"name": "Emotional Stability", "score": 86, "scale_max": 100, "certainty": "high"}
+    ]
+  }
+}

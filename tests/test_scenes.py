@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from fakes import PNG, FakePegasus, make_client
 from scene_orchestrator.api.app import create_app
+from scene_orchestrator.config import AutoCreateConfig
 from scene_orchestrator.manifest import read_manifest
 from scene_orchestrator.mapping import RuleSpecMapper
 from scene_orchestrator.models import SceneSpec
@@ -412,3 +413,58 @@ def test_after_a_restart_a_fallback_scene_is_still_ready(config):
     assert scene["status"] == "ready"
     assert scene["spec"]["sky_mode"] == "procedural"
     assert "CUDA out of memory" in scene["error"]
+
+
+# -- a scene Unity asks for before anyone created it ------------------------
+
+
+def _auto(config, sky_mode="procedural"):
+    return config.model_copy(
+        update={"auto_create": AutoCreateConfig(personas_dir=FIXTURES, sky_mode=sky_mode)}
+    )
+
+
+def test_a_missing_scene_is_built_when_it_is_asked_for(config, out_dir):
+    with _serve(_auto(config)) as client:
+        scene = client.get("/scenes/P04").json()  # no POST before it
+
+        assert scene["status"] == "ready"  # in that same answer: nothing to poll for
+        assert scene["spec"]["scene_id"] == "P04"
+        assert scene["spec"]["sky_mode"] == "procedural"
+        assert scene["spec"]["seed"] == derive_seed("P04")
+        assert scene["files"] == ["scene_spec.json"]
+        assert client.get("/scenes/P04/files/scene_spec.json").status_code == 200
+    assert read_manifest(out_dir)["P04"]["status"] == "ok"
+
+
+def test_a_missing_panorama_scene_is_started_only_once(config):
+    pegasus = FakePegasus()
+    with _serve(_auto(config, "panorama"), pegasus) as client:
+        client.get("/scenes/P04")
+        client.get("/scenes/P04")  # Unity asking again
+        assert client.app.state.scenes.wait_idle()
+        scene = client.get("/scenes/P04").json()
+
+    assert scene["status"] == "ready"
+    assert scene["spec"]["skybox"]["uri"] == f"skybox_{derive_seed('P04')}.png"
+    assert len(pegasus.submitted) == 1
+
+
+def test_a_scene_that_exists_is_not_built_again(config):
+    with _serve(_auto(config)) as client:
+        _run(client, persona_file=_persona_file("P04"), seed=7)
+    with _serve(_auto(config)) as fresh:  # nothing in memory, only the files on disk
+        assert fresh.get("/scenes/P04").json()["spec"]["seed"] == 7
+
+
+def test_a_participant_without_a_persona_file_is_still_404(config, out_dir):
+    with _serve(_auto(config)) as client:
+        assert client.get("/scenes/P99").status_code == 404
+    assert "P99" not in read_manifest(out_dir)
+
+
+def test_a_missing_scene_whose_persona_wont_convert_is_failed(config):
+    with _serve(_auto(config)) as client:
+        scene = client.get("/scenes/P03").json()
+    assert scene["status"] == "failed"
+    assert "Agreeableness" in scene["error"]

@@ -12,9 +12,12 @@ from .scene_spec import (
     Skybox,
     SkyClouds,
     SkyMode,
+    SkyStars,
     Spatial,
     Terrain,
+    TimeOfDay,
     Water,
+    Weather,
 )
 
 __all__ = [
@@ -29,8 +32,11 @@ __all__ = [
     "Skybox",
     "SkyClouds",
     "SkyMode",
+    "SkyStars",
     "Spatial",
     "Terrain",
+    "TimeOfDay",
     "Traits",
     "Water",
+    "Weather",
 ]

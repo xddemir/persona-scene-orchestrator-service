@@ -16,6 +16,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .models import SkyMode
+
 CONFIG_ENV_VAR = "SCENE_ORCHESTRATOR_CONFIG"
 DEFAULT_CONFIG_PATH = Path("configs/default.yaml")
 
@@ -54,10 +56,24 @@ class ImageGenConfig(BaseModel):
     retries: int = Field(default=1, ge=0)
 
 
+class AutoCreateConfig(BaseModel):
+    """Building a scene the moment Unity asks for one nobody created yet."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Holds <participant_id>.json, like the batch runner's --personas folder.
+    personas_dir: Path
+    # As for POST /scenes. Without a connection to Pegasus a panorama scene
+    # falls back to the procedural sky, so a scene is built either way.
+    sky_mode: SkyMode = "panorama"
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     out_dir: Path = Path("out")
+    # Left out: GET /scenes/{id} for a scene nobody created is a 404.
+    auto_create: AutoCreateConfig | None = None
     image_gen: ImageGenConfig
 
 

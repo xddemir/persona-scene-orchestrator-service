@@ -20,12 +20,17 @@ from scene_orchestrator.mapping.rule_mapper import (
     HORIZON_ACCENT,
     HORIZON_VALUE,
     LINEAR_RULES,
+    MOON_AZIMUTH_SPREAD_DEG,
+    MOON_COLOR_TEMPERATURE_K,
     SKY_TINT_SATURATION,
     SKY_TINT_VALUE,
+    SUNRISE_GLOW,
+    SUNSET_GLOW,
     _procedural_sky,
 )
-from scene_orchestrator.models import PersonaProfile, SceneSpec, Traits
+from scene_orchestrator.models import PersonaProfile, SceneSpec, TimeOfDay, Traits
 from scene_orchestrator.models.scene_spec import Biome
+from scene_orchestrator.pipeline import derive_seed
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "personas" / "chatbot"
 MAPPER: SpecMapper = RuleSpecMapper()  # also checks it fits the protocol
@@ -93,6 +98,8 @@ def test_anxious_p01_has_more_fog(p01, p02):
 
 def test_introverted_p01_has_a_lower_sun(p01, p02):
     assert p01.lighting.sun_elevation_deg < p02.lighting.sun_elevation_deg
+    assert p01.lighting.sun_elevation_deg == -2.1  # -30 + (60 + 30) * 0.31: just under the horizon
+    assert (p01.lighting.time_of_day, p02.lighting.time_of_day) == ("sunrise", "midday")
 
 
 def test_introverted_p01_has_warmer_light(p01, p02):
@@ -125,7 +132,7 @@ def test_anxious_p01_has_a_less_saturated_sky(p01, p02):
 
 def test_anxious_p01_has_more_and_softer_cloud(p01, p02):
     assert p01.procedural_sky.clouds.coverage > p02.procedural_sky.clouds.coverage
-    assert p01.procedural_sky.clouds.coverage == 0.54  # 0.20 + (0.70 - 0.20) * 0.68
+    assert p01.procedural_sky.clouds.coverage == 0.662  # 0.05 + (0.95 - 0.05) * 0.68
     assert p01.procedural_sky.clouds.softness > p02.procedural_sky.clouds.softness
 
 
@@ -187,6 +194,115 @@ def test_openness_picks_the_biome_tier():
     high = {MAPPER.map(_persona(openness=0.9), s, "t").biome for s in seeds}
     assert low == set(BIOME_TIERS[0][1])
     assert high == set(BIOME_TIERS[-1][1])
+
+
+@pytest.mark.parametrize(
+    ("extraversion", "conscientiousness", "time_of_day"),
+    [
+        (0.0, 0.9, "night"),  # the sun 30 degrees under
+        (0.26, 0.9, "night"),  # -6.6
+        (0.27, 0.9, "sunrise"),  # -5.7: morning types see it come up
+        (0.27, 0.5, "sunset"),  # and the others see it go down
+        (0.44, 0.1, "sunset"),  # 9.6
+        (0.45, 0.1, "afternoon"),  # 10.5
+        (0.45, 0.51, "morning"),
+        (0.77, 0.51, "morning"),  # 39.3
+        (0.78, 0.51, "midday"),  # 40.2: midday has no halves
+        (1.0, 0.1, "midday"),  # 60
+    ],
+)
+def test_time_of_day_follows_extraversion_and_conscientiousness(
+    extraversion, conscientiousness, time_of_day
+):
+    persona = _persona(extraversion=extraversion, conscientiousness=conscientiousness)
+    assert MAPPER.map(persona, 1, "t").lighting.time_of_day == time_of_day
+
+
+def test_the_key_light_is_the_sun_and_at_night_the_moon():
+    night = MAPPER.map(_persona(extraversion=0.0, neuroticism=0.5), 1, "t").lighting
+    dusk = MAPPER.map(_persona(extraversion=0.3), 1, "t").lighting
+    noon = MAPPER.map(_persona(extraversion=1.0), 1, "t").lighting
+
+    assert night.color_temperature_k == MOON_COLOR_TEMPERATURE_K  # cool
+    assert night.intensity == 0.105  # half a moon: midway between 0.03 and 0.18
+    assert dusk.color_temperature_k < 2500 < 5500 < noon.color_temperature_k  # warm, then neutral
+    assert night.intensity < dusk.intensity < noon.intensity == 1.0
+
+
+def test_an_anxious_night_is_never_quite_dark():
+    calm = MAPPER.map(_persona(extraversion=0.0, neuroticism=0.0), 1, "t")
+    anxious = MAPPER.map(_persona(extraversion=0.0, neuroticism=1.0), 1, "t")
+    assert (calm.lighting.moon_phase, anxious.lighting.moon_phase) == (0.0, 1.0)  # new, full
+    assert anxious.lighting.intensity > calm.lighting.intensity
+    # ...and it is the calm one who sees the stars.
+    assert calm.procedural_sky.stars.brightness > anxious.procedural_sky.stars.brightness
+
+
+def test_the_moon_stands_as_far_from_the_sun_as_its_phase_says():
+    def apart(neuroticism: float, seed: int) -> float:
+        light = MAPPER.map(_persona(neuroticism=neuroticism), seed, "t").lighting
+        return (light.moon_azimuth_deg - light.sun_azimuth_deg) % 360
+
+    for seed in range(30):
+        assert min(apart(0.0, seed), 360 - apart(0.0, seed)) <= MOON_AZIMUTH_SPREAD_DEG  # beside it
+        assert abs(apart(1.0, seed) - 180) <= MOON_AZIMUTH_SPREAD_DEG  # opposite
+
+
+def test_openness_fills_the_night_sky():
+    plain = MAPPER.map(_persona(openness=0.0), 1, "t").procedural_sky.stars
+    rich = MAPPER.map(_persona(openness=1.0), 1, "t").procedural_sky.stars
+    assert (plain.density, rich.density) == (0.15, 1.0)
+    assert (plain.milky_way, rich.milky_way) == (0.0, 1.0)
+
+
+@pytest.mark.parametrize(
+    ("neuroticism", "precipitation"),
+    [(0.0, 0.0), (0.7, 0.0), (0.85, 0.5), (1.0, 1.0)],
+)
+def test_rain_starts_where_the_cloud_cover_closes(neuroticism, precipitation):
+    spec = MAPPER.map(_persona(neuroticism=neuroticism), 1, "t")
+    assert spec.weather.precipitation == precipitation
+
+
+def test_what_falls_is_snow_only_in_a_snowy_biome():
+    specs = [MAPPER.map(_persona(openness=0.9), seed, "t") for seed in range(30)]
+    assert {s.biome for s in specs} == set(BIOME_TIERS[-1][1])
+    for spec in specs:
+        assert spec.weather.kind == ("snow" if spec.biome == "snowy_valley" else "rain")
+
+
+def test_the_low_sun_glows_rose_in_the_morning_and_amber_in_the_evening():
+    def glow(**traits) -> tuple[float, float]:
+        hue, saturation, value = colorsys.rgb_to_hsv(
+            *MAPPER.map(_persona(**traits), 1, "t").procedural_sky.twilight_color
+        )
+        assert value == 1.0
+        return hue * 360, saturation
+
+    (rose, _), (amber, vivid) = glow(conscientiousness=0.9), glow(conscientiousness=0.1)
+    assert rose == pytest.approx(SUNRISE_GLOW[0], abs=1.0)
+    assert amber == pytest.approx(SUNSET_GLOW[0], abs=1.0)
+    _, muted = glow(conscientiousness=0.1, neuroticism=1.0)
+    assert muted < glow(conscientiousness=0.1, neuroticism=0.0)[1]  # like the rest of the sky
+    assert vivid > muted
+
+
+def test_the_fixtures_between_them_show_every_kind_of_sky():
+    specs = [
+        MAPPER.map(_fixture(path.stem), derive_seed(path.stem), path.stem)
+        for path in sorted(FIXTURES.glob("*.json"))
+        if path.stem != "P03"  # incomplete on purpose
+    ]
+    assert {s.lighting.time_of_day for s in specs} == set(get_args(TimeOfDay))
+    assert {s.biome for s in specs} == set(get_args(Biome))
+    falling = {(s.weather.kind, s.lighting.time_of_day) for s in specs if s.weather.precipitation}
+    assert {kind for kind, _ in falling} == {"rain", "snow"}
+    assert "night" in {time for _, time in falling}  # a rainy night among them
+    nights = [s for s in specs if s.lighting.time_of_day == "night"]
+    assert min(s.lighting.moon_phase for s in nights) < 0.1  # moonless
+    assert max(s.lighting.moon_phase for s in nights) > 0.9  # and a full moon
+    assert min(s.procedural_sky.clouds.coverage for s in specs) < 0.15  # clear
+    assert max(s.procedural_sky.clouds.coverage for s in specs) > 0.85  # overcast
 
 
 def test_agreeableness_is_unmapped():

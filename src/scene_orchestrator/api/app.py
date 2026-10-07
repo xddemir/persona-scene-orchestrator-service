@@ -43,6 +43,11 @@ from .scenes import SceneInProgress, SceneJob, SceneRunner
 # uvicorn's own logger, so these lines show up in the server console.
 log = logging.getLogger("uvicorn.error")
 
+# How long the GET that starts a missing scene waits for it. A procedural scene
+# takes milliseconds, so it is answered "ready" at once instead of sending
+# Unity off to ask again later. A panorama takes minutes and isn't waited for.
+AUTO_CREATE_WAIT_S = 2.0
+
 
 def create_app(
     config: AppConfig | None = None, *, image_gen: SlurmImageGenClient | None = None
@@ -134,27 +139,53 @@ def create_app(
             raise HTTPException(status_code=409, detail=f"{scene_id} is already being generated")
         return SceneAccepted(scene_id=job.scene_id, status=job.status)
 
+    def create_missing(scene_id: str) -> SceneJob | None:
+        """Start the scene of a participant nobody created one for, from their
+        persona file. None when that is switched off or there is no such file."""
+        auto = config.auto_create
+        if auto is None:
+            return None
+        try:
+            path = auto.personas_dir / f"{scene_id_for(scene_id)}.json"
+        except ValueError:
+            return None
+        if not path.is_file():
+            return None
+        raw = _read_persona(str(path))
+        log.info("%s: no scene yet, building it from %s", scene_id, path)
+        # replace=False: two requests for the same missing scene start it once.
+        scenes.submit(SceneJob(scene_id, None, raw, auto.sky_mode), replace=False)
+        return scenes.wait(scene_id, AUTO_CREATE_WAIT_S)
+
     @app.get("/scenes/{scene_id}", response_model=SceneResponse)
     def get_scene(scene_id: str) -> SceneResponse:
-        """Everything for one participant: status, Slurm progress, persona, spec, files."""
+        """Everything for one participant: status, Slurm progress, persona, spec, files.
+
+        With `auto_create` configured, a scene nobody created yet is built now,
+        from that participant's persona file.
+        """
         job = scenes.get(scene_id)
-        if job is not None:
-            return SceneResponse(
-                scene_id=job.scene_id, status=job.status, detail=job.detail,
-                persona=job.persona, spec=job.spec, files=job.files, error=job.error,
-            )
-        # Not in memory (e.g. after a restart): answer from the files on disk.
-        entry = read_manifest(config.out_dir).get(scene_id)
-        if entry is None:
-            raise HTTPException(status_code=404, detail=f"unknown scene {scene_id!r}")
+        if job is None:
+            # Not in memory (e.g. after a restart): answer from the files on disk.
+            entry = read_manifest(config.out_dir).get(scene_id)
+            if entry is not None:
+                return SceneResponse(
+                    scene_id=scene_id,
+                    status=(
+                        SceneStatus.READY
+                        if entry["status"] in ("ok", "fallback")
+                        else SceneStatus.FAILED
+                    ),
+                    spec=_read_spec(config.out_dir, scene_id),
+                    files=entry.get("files", []),
+                    error=entry.get("error"),
+                )
+            job = create_missing(scene_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail=f"unknown scene {scene_id!r}")
         return SceneResponse(
-            scene_id=scene_id,
-            status=(
-                SceneStatus.READY if entry["status"] in ("ok", "fallback") else SceneStatus.FAILED
-            ),
-            spec=_read_spec(config.out_dir, scene_id),
-            files=entry.get("files", []),
-            error=entry.get("error"),
+            scene_id=job.scene_id, status=job.status, detail=job.detail,
+            persona=job.persona, spec=job.spec, files=job.files, error=job.error,
         )
 
     @app.get("/scenes/{scene_id}/files/{name}")

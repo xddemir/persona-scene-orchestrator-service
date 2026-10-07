@@ -31,10 +31,13 @@ from ..models import (
     SceneSpec,
     Skybox,
     SkyClouds,
+    SkyStars,
     Spatial,
     Terrain,
+    TimeOfDay,
     Traits,
     Water,
+    Weather,
 )
 
 # -- trait -> parameter: linear rules ---------------------------------------
@@ -57,6 +60,8 @@ LINEAR_RULES: tuple[LinearRule, ...] = (
                "shorter views, fewer open exposures"),
     LinearRule("lighting.fog_density", "neuroticism", 0.005, 0.045,
                "soft haze closes the space in"),
+    LinearRule("lighting.moon_phase", "neuroticism", 0.0, 1.0,
+               "a fuller moon, so the night is never quite dark"),
     LinearRule("motion.wind_strength", "neuroticism", 0.45, 0.12,
                "stiller air, less agitation"),
     LinearRule("terrain.water.motion", "neuroticism", 0.40, 0.10,
@@ -66,15 +71,15 @@ LINEAR_RULES: tuple[LinearRule, ...] = (
     # A factor on SKY_TINT_SATURATION, not a saturation itself.
     LinearRule("procedural_sky.sky_tint.saturation_scale", "neuroticism", 1.0, 0.45,
                "more muted sky colour"),
-    LinearRule("procedural_sky.clouds.coverage", "neuroticism", 0.20, 0.70,
-               "more cloud overhead, a sheltering cover"),
+    LinearRule("procedural_sky.clouds.coverage", "neuroticism", 0.05, 0.95,
+               "from a clear sky to a closed, sheltering cover"),
     LinearRule("procedural_sky.clouds.softness", "neuroticism", 0.25, 0.80,
                "softer, more diffuse clouds"),
+    LinearRule("procedural_sky.stars.brightness", "neuroticism", 1.0, 0.35,
+               "haze and moonlight leave fewer stars to see"),
     # extraversion -> brightness and liveliness
-    LinearRule("lighting.sun_elevation_deg", "extraversion", 6, 40,
-               "higher sun, brighter scene"),
-    LinearRule("lighting.color_temperature_k", "extraversion", 2900, 5400,
-               "warm low light -> neutral daylight"),
+    LinearRule("lighting.sun_elevation_deg", "extraversion", -30, 60,
+               "from a starlit night, past dawn or dusk, to high noon"),
     LinearRule("audio.birds.gain", "extraversion", 0.05, 0.25,
                "livelier soundscape"),
     LinearRule("audio.birds.event_rate_per_min", "extraversion", 1, 12,
@@ -95,6 +100,10 @@ LINEAR_RULES: tuple[LinearRule, ...] = (
     # How much of HORIZON_ACCENT is mixed into the horizon, not a colour itself.
     LinearRule("procedural_sky.horizon_color.accent", "openness", 0.0, 0.5,
                "a second colour at the horizon"),
+    LinearRule("procedural_sky.stars.density", "openness", 0.15, 1.0,
+               "a richer, more crowded star field"),
+    LinearRule("procedural_sky.stars.milky_way", "openness", 0.0, 1.0,
+               "the band of the Milky Way comes out"),
     # conscientiousness -> order
     LinearRule("procedural_sky.clouds.banding", "conscientiousness", 0.0, 1.0,
                "clouds in regular rows rather than scattered"),
@@ -103,6 +112,20 @@ LINEAR_RULES: tuple[LinearRule, ...] = (
 # neuroticism -> prospect/refuge (Appleton). Between the two: "balanced".
 REFUGE_ABOVE = 0.6
 PROSPECT_BELOW = 0.4
+
+# neuroticism -> rain (snow in a snowy biome): none up to here, then rising to
+# steady at 1.0. The far end of the sheltering cloud cover: a veil that closes
+# the view, and a sound that masks every other.
+RAIN_ABOVE = 0.7
+
+# extraversion -> time of day, by where its rule above puts the sun.
+NIGHT_BELOW_DEG = -6.0  # the end of civil twilight
+LOW_SUN_BELOW_DEG = 10.0  # from there up to here the sun is rising or setting
+MIDDAY_FROM_DEG = 40.0
+
+# conscientiousness -> which half of the day (rising early goes with it).
+# Above this the sun is rising or climbing; else it is sinking or setting.
+MORNING_ABOVE = 0.5
 
 # conscientiousness -> order in prop placement.
 RINGED_ABOVE = 0.65  # neat, regular arrangement
@@ -131,10 +154,34 @@ EXCLUDE_RADIUS_M = (25.0, 6.0)  # clear area around the viewer
 MIN_SPACING_M = (6.0, 2.5)
 PROPS_PER_CLUSTER = 20  # for "clustered": cluster_count = count / this
 
+# -- derived from lighting.sun_elevation_deg (itself from extraversion) ------
+
+# The key light is the sun, and at night the moon. For the sun: (elevation,
+# value) points, linear in between and flat beyond the ends.
+SUN_COLOR_TEMPERATURE_K = (
+    (-6.0, 2100.0), (0.0, 2400.0), (10.0, 3600.0), (25.0, 5000.0), (45.0, 5800.0),
+)
+SUN_INTENSITY = ((-6.0, 0.08), (0.0, 0.25), (10.0, 0.60), (25.0, 1.0))
+MOON_COLOR_TEMPERATURE_K = 8000.0  # cool, as moonlight is seen
+MOON_INTENSITY = (0.03, 0.18)  # new moon -> full moon (lighting.moon_phase)
+
+# The glow of a low sun, as (hue in degrees, saturation): rose in the morning,
+# amber in the evening. Neuroticism mutes it along with the rest of the sky.
+SUNRISE_GLOW = (8.0, 0.45)
+SUNSET_GLOW = (22.0, 0.80)
+
+# The moon stands as far round from the sun as its phase says (a thin crescent
+# beside it, a full moon opposite), give or take what the seed adds. How high
+# it stands is up to the seed alone.
+MOON_AZIMUTH_SPREAD_DEG = 25.0
+MOON_ELEVATION_DEG = (25.0, 60.0)
+
 # -- fixed (not persona-driven yet) -----------------------------------------
 
 SKYBOX_RESOLUTION = (2048, 1024)  # equirectangular 2:1, image-gen's default
 ACTIVITY = "seated_relaxation"
+
+SNOW_BIOMES = frozenset({"snowy_valley"})  # where what falls is snow, not rain
 
 # -- what each biome is made of ---------------------------------------------
 
@@ -266,6 +313,13 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
         _r(rng.uniform(0.0, CLOUD_OFFSET_MAX)),
         _r(rng.uniform(0.0, CLOUD_OFFSET_MAX)),
     )
+    moon_spread = rng.uniform(-MOON_AZIMUTH_SPREAD_DEG, MOON_AZIMUTH_SPREAD_DEG)
+    moon_elevation = _r(rng.uniform(*MOON_ELEVATION_DEG))
+
+    sun_elevation = _linear("lighting.sun_elevation_deg", traits)
+    time_of_day = _time_of_day(sun_elevation, traits.conscientiousness)
+    moon_phase = _linear("lighting.moon_phase", traits)
+    night = time_of_day == "night"
 
     enclosure = _linear("spatial.enclosure", traits)
     distribution = _distribution(traits.conscientiousness)
@@ -310,10 +364,27 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
         ),
         props=props,
         lighting=Lighting(
-            sun_elevation_deg=_linear("lighting.sun_elevation_deg", traits),
+            sun_elevation_deg=sun_elevation,
             sun_azimuth_deg=sun_azimuth,
-            color_temperature_k=_linear("lighting.color_temperature_k", traits),
+            time_of_day=time_of_day,
+            moon_elevation_deg=moon_elevation,
+            moon_azimuth_deg=_r((sun_azimuth + 180.0 * moon_phase + moon_spread) % 360.0),
+            moon_phase=moon_phase,
+            color_temperature_k=_r(
+                MOON_COLOR_TEMPERATURE_K
+                if night
+                else _interpolate(SUN_COLOR_TEMPERATURE_K, sun_elevation)
+            ),
+            intensity=_r(
+                _lerp(*MOON_INTENSITY, moon_phase)
+                if night
+                else _interpolate(SUN_INTENSITY, sun_elevation)
+            ),
             fog_density=_linear("lighting.fog_density", traits),
+        ),
+        weather=Weather(
+            precipitation=_precipitation(traits.neuroticism),
+            kind="snow" if biome in SNOW_BIOMES else "rain",
         ),
         spatial=Spatial(
             enclosure=enclosure,
@@ -347,6 +418,25 @@ def _prospect_refuge(neuroticism: float) -> str:
     return "balanced"
 
 
+def _precipitation(neuroticism: float) -> float:
+    return _r(max(0.0, (neuroticism - RAIN_ABOVE) / (1.0 - RAIN_ABOVE)))
+
+
+def _is_morning(conscientiousness: float) -> bool:
+    return conscientiousness > MORNING_ABOVE
+
+
+def _time_of_day(sun_elevation_deg: float, conscientiousness: float) -> TimeOfDay:
+    if sun_elevation_deg < NIGHT_BELOW_DEG:
+        return "night"
+    morning = _is_morning(conscientiousness)
+    if sun_elevation_deg < LOW_SUN_BELOW_DEG:
+        return "sunrise" if morning else "sunset"
+    if sun_elevation_deg >= MIDDAY_FROM_DEG:
+        return "midday"
+    return "morning" if morning else "afternoon"
+
+
 def _distribution(conscientiousness: float) -> str:
     if conscientiousness > RINGED_ABOVE:
         return "ringed"
@@ -359,19 +449,29 @@ def _procedural_sky(
     biome: str, traits: Traits, cloud_offset: tuple[float, float]
 ) -> ProceduralSky:
     hue = BIOME_SKY_HUE[biome] / 360.0
-    saturation = SKY_TINT_SATURATION * _linear(
-        "procedural_sky.sky_tint.saturation_scale", traits
-    )
+    mute = _linear("procedural_sky.sky_tint.saturation_scale", traits)
+    saturation = SKY_TINT_SATURATION * mute
     pale = colorsys.hsv_to_rgb(hue, saturation * HORIZON_SATURATION_SCALE, HORIZON_VALUE)
     accent = _linear("procedural_sky.horizon_color.accent", traits)
+    glow_hue, glow_saturation = (
+        SUNRISE_GLOW if _is_morning(traits.conscientiousness) else SUNSET_GLOW
+    )
     return ProceduralSky(
         atmosphere_thickness=_linear("procedural_sky.atmosphere_thickness", traits),
         sky_tint=_rgb(colorsys.hsv_to_rgb(hue, saturation, SKY_TINT_VALUE)),
         horizon_color=_rgb(_lerp(p, a, accent) for p, a in zip(pale, HORIZON_ACCENT)),
+        twilight_color=_rgb(
+            colorsys.hsv_to_rgb(glow_hue / 360.0, glow_saturation * mute, 1.0)
+        ),
         ground_color=BIOME_GROUND_COLOR[biome],
         exposure=_linear("procedural_sky.exposure", traits),
         sun_size=_linear("procedural_sky.sun_size", traits),
         sun_halo=_linear("procedural_sky.sun_halo", traits),
+        stars=SkyStars(
+            density=_linear("procedural_sky.stars.density", traits),
+            brightness=_linear("procedural_sky.stars.brightness", traits),
+            milky_way=_linear("procedural_sky.stars.milky_way", traits),
+        ),
         clouds=SkyClouds(
             coverage=_linear("procedural_sky.clouds.coverage", traits),
             softness=_linear("procedural_sky.clouds.softness", traits),
@@ -407,6 +507,16 @@ def _pick_prop_types(
 
 def _lerp(at_0: float, at_1: float, t: float) -> float:
     return at_0 + (at_1 - at_0) * t
+
+
+def _interpolate(points: tuple[tuple[float, float], ...], x: float) -> float:
+    """The value at x on the line through `points`, flat beyond its two ends."""
+    if x <= points[0][0]:
+        return points[0][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x <= x1:
+            return _lerp(y0, y1, (x - x0) / (x1 - x0))
+    return points[-1][1]
 
 
 def _round_half_up(x: float) -> int:

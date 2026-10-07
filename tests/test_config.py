@@ -28,6 +28,16 @@ def test_default_config_describes_pegasus():
     assert image_gen.retries == 1
 
 
+def test_default_config_builds_missing_scenes_from_the_fixtures():
+    auto = load_config(CONFIGS / "default.yaml").auto_create
+    assert (CONFIGS.parent / auto.personas_dir / "P01.json").is_file()
+    assert auto.sky_mode == "panorama"
+
+
+def test_auto_create_is_off_unless_configured(tmp_path):
+    assert load_config(_write(tmp_path, PEGASUS)).auto_create is None
+
+
 def test_env_var_selects_the_file(tmp_path, monkeypatch):
     path = _write(tmp_path, {**PEGASUS, "partition": "A100-80GB"})
     monkeypatch.setenv(CONFIG_ENV_VAR, str(path))

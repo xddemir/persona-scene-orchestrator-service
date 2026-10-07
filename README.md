@@ -70,6 +70,12 @@ persona (file or inline) → ChatbotV2Adapter → RuleSpecMapper → TemplatePro
 - Without a `seed`, it's derived from SHA-256 of the participant id, so it's the same on every run.
 - `GET /scenes/P01` returns everything for that participant in one call: status, Slurm progress,
   the converted persona, the spec and the files.
+- A scene nobody created yet is built by that same `GET`, when the config has an `auto_create`
+  block and its `personas_dir` holds `P01.json`. So Unity can ask for a participant straight away.
+  The sky is `auto_create.sky_mode`. With `panorama` (the default) the skybox is generated on
+  Pegasus if the connection is open, and Unity waits for it; if it isn't, the scene falls back to
+  the procedural sky and is `ready` at once. A scene that already exists, fallbacks and `failed`
+  ones included, is never rebuilt this way; `POST /scenes` or the batch runner replaces it.
 - `scene_spec.json` carries the prompt (`skybox.prompt`) and the image's file name (`skybox.uri`).
 - Every outcome ends in `out/manifest.json`, which is what Unity reads. A scene is entered as
   `failed` ("did not finish") when it starts and overwritten when it ends, so even a crash leaves an
@@ -91,9 +97,10 @@ persona (file or inline) → ChatbotV2Adapter → RuleSpecMapper → TemplatePro
 `sky_mode` says which sky Unity renders:
 
 - `"panorama"` (the default): the generated 360° image, `skybox` in the spec.
-- `"procedural"`: a sky drawn by a shader in the Unity project (colour gradient, sun, clouds), set
-  up from `procedural_sky` in the spec. No image is made and Pegasus isn't needed; `POST /scenes`
-  goes from `building_spec` straight to `ready`.
+- `"procedural"`: a sky drawn by a shader in the Unity project (colour gradient, sun, moon, stars,
+  clouds, rain or snow), set up from `procedural_sky`, `lighting` and `weather` in the spec. No
+  image is made and Pegasus isn't needed; `POST /scenes` goes from `building_spec` straight to
+  `ready`.
 
 `procedural_sky` is filled in on **every** spec, from the same persona, whichever mode was asked
 for. So the two modes can be compared for one participant, and a panorama that can't be made
@@ -106,9 +113,43 @@ doesn't cost the scene: after the usual retry, the spec is written with `sky_mod
 | `fallback` | No panorama; the spec on disk uses the procedural sky. `error` says why | `ready` |
 | `failed` | No usable scene (e.g. the persona won't convert). `error` says why | `failed` |
 
-The manifest's `sky_mode` is the mode of the spec on disk, so `"procedural"` for a fallback. Sun
-angle, colour temperature and fog are in `lighting`, which both modes read; `procedural_sky` holds
-only what the sky shader needs on top.
+The manifest's `sky_mode` is the mode of the spec on disk, so `"procedural"` for a fallback. Where
+the sun and the moon stand, the time of day, the light's colour and strength, fog and rain are in
+`lighting` and `weather`, which both modes read; `procedural_sky` holds only what the sky shader
+needs on top.
+
+### Time of day and weather
+
+The spec says where the sun and the moon stand and what is in the sky. Both skies follow from
+that: the prompt names the hour, the cloud, the moon, the stars and the rain, and the sky shader
+draws them.
+
+| What | Driven by | From → to |
+| --- | --- | --- |
+| `lighting.sun_elevation_deg` | extraversion | −30° (deep night) → 60° (high noon) |
+| `lighting.time_of_day` | the sun's elevation, and conscientiousness for the half of the day | see below |
+| `procedural_sky.clouds.coverage` | neuroticism | 0.05 (clear) → 0.95 (overcast) |
+| `weather.precipitation` | neuroticism | none up to 0.7, then rising to steady at 1.0 |
+| `weather.kind` | biome | `snow` in `snowy_valley`, `rain` elsewhere |
+| `lighting.moon_phase` | neuroticism | new moon → full moon |
+| `procedural_sky.stars.brightness` | neuroticism | 1.0 → 0.35 |
+| `procedural_sky.stars.density`, `.milky_way` | openness | a few stars → a crowded sky with the Milky Way |
+| `procedural_sky.twilight_color` | conscientiousness, muted by neuroticism | evening amber or morning rose |
+
+| Sun's elevation | `time_of_day` |
+| --- | --- |
+| below −6° | `night` |
+| −6° to 10° | `sunrise` if conscientiousness > 0.5, else `sunset` |
+| 10° to 40° | `morning` if conscientiousness > 0.5, else `afternoon` |
+| 40° and up | `midday` |
+
+`lighting.color_temperature_k` and `lighting.intensity` describe the key light and follow from the
+sun's elevation: warm and weak while it is low, neutral and full once it is high. At night the
+key light is the moon: cool (8000 K), and 0.03 to 0.18 of daylight by its phase. The moon stands
+as far round from the sun as its phase says (a crescent beside it, a full moon opposite); how
+high it stands comes from the seed.
+
+Audio does not follow yet: a night scene still lists its birdsong, and rain has no sound layer.
 
 ### What shapes the procedural sky
 
@@ -118,19 +159,24 @@ Every part of it follows from the persona, by the same four themes as the rest o
 | --- | --- | --- |
 | `atmosphere_thickness` | neuroticism | Crisp horizon → haze reaching far up |
 | `sky_tint` (colour overhead) | biome (hue), neuroticism (saturation) | Vivid → muted |
-| `clouds.coverage` | neuroticism | Mostly clear → mostly covered |
+| `twilight_color` (the low sun's glow) | conscientiousness (hue), neuroticism (saturation) | Evening amber or morning rose; vivid → muted |
+| `clouds.coverage` | neuroticism | Clear → overcast |
 | `clouds.softness` | neuroticism | Crisp edges → diffuse |
 | `exposure` | extraversion | Dim → bright |
 | `sun_size`, `sun_halo` | extraversion | Small sun, faint glow → large sun, strong glow |
 | `clouds.brightness` | extraversion | Grey → white |
 | `clouds.detail` | openness | Smooth shapes → intricate |
+| `stars.density`, `stars.milky_way` | openness | A few stars → a crowded field with the Milky Way |
+| `stars.brightness` | neuroticism | A dark clear night → washed out by haze and moon |
 | `horizon_color` | openness (plus the sky's own colour) | Paler sky → a second, warmer colour |
 | `clouds.banding` | conscientiousness | Scattered puffs → regular rows along the wind |
 | `ground_color` | biome | |
 | `clouds.offset` | seed | Which clouds, not what kind |
 
-The clouds drift with `motion`'s wind (direction and strength), so they have no speed of their
-own. Agreeableness drives nothing, as elsewhere. The exact numbers are the `procedural_sky.*`
+The colours are the daytime ones. The shader takes them down to dusk and night as the sun goes,
+and draws the moon, the stars and what falls from `lighting` and `weather`. The clouds drift with
+`motion`'s wind (direction and strength), so they have no speed of their own, and the stars
+twinkle with it. Agreeableness drives nothing, as elsewhere. The exact numbers are the `procedural_sky.*`
 entries of `LINEAR_RULES` in [`rule_mapper.py`](src/scene_orchestrator/mapping/rule_mapper.py).
 
 ## Many participants at once
@@ -194,6 +240,10 @@ and generating that scene again (same seed) picks the job up instead of submitti
 image-gen lives there (repo, venv, weights, output), and the GPU job's partition, account and time
 limit. Point `SCENE_ORCHESTRATOR_CONFIG` at another file to use different settings.
 
+Its `auto_create` block names the folder of `<participant_id>.json` personas that missing scenes
+are built from, and their sky mode. It points at the fixtures; for the study, point it at the
+chatbot's output. Without the block, an unknown participant is a 404.
+
 ## Output
 
 ```text
@@ -226,7 +276,7 @@ A test fails while the committed schema is out of date.
 | Route | Purpose |
 | --- | --- |
 | `POST /scenes` | `{persona_file \| persona, seed?, sky_mode?}` → `202` + `{scene_id, status}`; the whole pipeline in the background |
-| `GET /scenes/{participant_id}` | Everything for one participant: `queued` → `building_spec` → `generating_image` (panorama only) → `ready` \| `failed`, Slurm progress, persona, spec, files, error |
+| `GET /scenes/{participant_id}` | Everything for one participant: `queued` → `building_spec` → `generating_image` (panorama only) → `ready` \| `failed`, Slurm progress, persona, spec, files, error. With `auto_create`, builds the scene first if there is none |
 | `GET /scenes/{participant_id}/files/{name}` | Download one file listed in `files`, e.g. the skybox PNG. Unlisted names get 404 |
 | `POST /skyboxes` | `{prompt, seed, scene_id}` → `202` + job; generation runs in the background |
 | `GET /skyboxes/{id}` | `queued` → `generating_image` → `ready` \| `failed`, with progress, files or error |
@@ -237,8 +287,11 @@ Job state is in memory and lost on restart. The files in `out/` are the durable 
 
 ## Test it with Unity
 
-The Unity project (`UnityRelaxVR`) only downloads scenes; it never creates them. So a test is
-always: create the scene on the server, then fetch it in Unity.
+The Unity project (`UnityRelaxVR`) only downloads scenes. With `auto_create` in the config (the
+default), asking for a participant whose persona is in `personas_dir` is enough: the server builds
+the scene, and on plain Windows, where Pegasus can't be reached, it gets the procedural sky in the
+same fetch. Steps 3 and 4 below are for a scene that already exists, or for choosing the sky
+yourself.
 
 ### Procedural sky (no VPN, no cluster, plain Windows)
 
@@ -252,7 +305,7 @@ always: create the scene on the server, then fetch it in Unity.
 
    A `WARNING: Pegasus: ...` line is expected. `Uvicorn running on http://127.0.0.1:8001` means
    it's up.
-3. **Create the scene:** open <http://127.0.0.1:8001/docs>, click **POST /scenes**, then
+3. **Create the scene** (optional, see above): open <http://127.0.0.1:8001/docs>, click **POST /scenes**, then
    **Try it out**, put this in the request body and click **Execute**:
 
    ```json
@@ -266,7 +319,27 @@ always: create the scene on the server, then fetch it in Unity.
 5. **Fetch in Unity:** open `Assets/Scenes/BasicScene.unity`, press Play, type `P01`, press
    **Fetch**. The experiment scene loads by itself.
 6. **Confirm:** the Console has a line starting `[SceneBuilder] P01: snowy_valley, sky: procedural`.
-   The sky is a colour gradient with a round sun and slowly drifting clouds, not a photo.
+   The sky is drawn, not a photo: for P01 a mostly cloudy dawn, with a rose glow where the sun is
+   about to rise and slowly drifting clouds.
+
+The fixtures between them show every kind of sky:
+
+| Participant | Sky | Biome |
+| --- | --- | --- |
+| P01 | Mostly cloudy dawn, the sun just under the horizon | snowy valley |
+| P02 | Sunny midday, a few clouds | birch grove |
+| P04 | Moonless night crowded with stars, the Milky Way | alpine basin |
+| P05 | Cloudless midday | wildflower meadow |
+| P06 | Rain at night, a full moon behind the cloud | coastal pines |
+| P07 | Snowfall at midday | snowy valley |
+| P08 | Sunrise, scattered clouds | lakeside |
+| P09 | Dusk after sunset, a thin crescent and the first stars | alpine basin |
+| P10 | Night, a half moon, scattered clouds, a few stars | wildflower meadow |
+| P11 | Clear sunset | coastal pines |
+| P12 | Rainy morning | forest clearing |
+| P13 | Mostly cloudy afternoon | rocky shore |
+
+P03 is missing a dimension on purpose: its scene fails, with the reason.
 
 ### Generated sky (needs the VPN and the cluster)
 
@@ -281,7 +354,7 @@ other `sky_mode`, then Fetch again.
 
 | What you see | What it means |
 | --- | --- |
-| Unity: "No scene for participant P01" | The scene wasn't created. Do step 3 |
+| Unity: "No scene for participant P01" | No scene, and no `P01.json` in `auto_create.personas_dir` to build one from (ids are case-sensitive). Add the persona, or do step 3 |
 | Unity: "Orchestrator not reachable. Using P01's files from an earlier fetch" | The server isn't running, so you're looking at old files. Do step 2 |
 | Unity: "ready, with Unity's own sky: the 360 image could not be made" | You asked for `panorama` but the cluster couldn't be reached, so it fell back to procedural |
 | Console: `sky: none, the scene's own sky kept` | An old spec from before sky modes. Create the scene again (step 3) |

@@ -53,7 +53,7 @@
       "properties": {
         "sun_elevation_deg": {
           "maximum": 90.0,
-          "minimum": 0.0,
+          "minimum": -90.0,
           "title": "Sun Elevation Deg",
           "type": "number"
         },
@@ -63,10 +63,46 @@
           "title": "Sun Azimuth Deg",
           "type": "number"
         },
+        "time_of_day": {
+          "enum": [
+            "night",
+            "sunrise",
+            "morning",
+            "midday",
+            "afternoon",
+            "sunset"
+          ],
+          "title": "Time Of Day",
+          "type": "string"
+        },
+        "moon_elevation_deg": {
+          "maximum": 90.0,
+          "minimum": 0.0,
+          "title": "Moon Elevation Deg",
+          "type": "number"
+        },
+        "moon_azimuth_deg": {
+          "maximum": 360.0,
+          "minimum": 0.0,
+          "title": "Moon Azimuth Deg",
+          "type": "number"
+        },
+        "moon_phase": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Moon Phase",
+          "type": "number"
+        },
         "color_temperature_k": {
-          "maximum": 7000.0,
+          "maximum": 10000.0,
           "minimum": 2000.0,
           "title": "Color Temperature K",
+          "type": "number"
+        },
+        "intensity": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Intensity",
           "type": "number"
         },
         "fog_density": {
@@ -79,7 +115,12 @@
       "required": [
         "sun_elevation_deg",
         "sun_azimuth_deg",
+        "time_of_day",
+        "moon_elevation_deg",
+        "moon_azimuth_deg",
+        "moon_phase",
         "color_temperature_k",
+        "intensity",
         "fog_density"
       ],
       "title": "Lighting",
@@ -110,7 +151,7 @@
     },
     "ProceduralSky": {
       "additionalProperties": false,
-      "description": "Parameters of the procedural sky shader in the Unity project: a colour\ngradient from horizon to zenith, the ground below, a sun with its glow,\nand clouds.\n\nNo sun angle, colour temperature or fog here: those are in `lighting`,\nwhich both sky modes read.",
+      "description": "Parameters of the procedural sky shader in the Unity project: a colour\ngradient from horizon to zenith, the ground below, a sun with its glow,\nclouds, and the night sky.\n\nNo sun or moon angle, colour temperature, fog or rain here: those are in\n`lighting` and `weather`, which both sky modes read. The colours are the\ndaytime ones; the shader takes them down to dusk and night with the sun.",
       "properties": {
         "atmosphere_thickness": {
           "maximum": 2.5,
@@ -164,6 +205,29 @@
           "title": "Horizon Color",
           "type": "array"
         },
+        "twilight_color": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            }
+          ],
+          "title": "Twilight Color",
+          "type": "array"
+        },
         "ground_color": {
           "maxItems": 3,
           "minItems": 3,
@@ -205,6 +269,9 @@
           "title": "Sun Halo",
           "type": "number"
         },
+        "stars": {
+          "$ref": "#/$defs/SkyStars"
+        },
         "clouds": {
           "$ref": "#/$defs/SkyClouds"
         }
@@ -213,10 +280,12 @@
         "atmosphere_thickness",
         "sky_tint",
         "horizon_color",
+        "twilight_color",
         "ground_color",
         "exposure",
         "sun_size",
         "sun_halo",
+        "stars",
         "clouds"
       ],
       "title": "ProceduralSky",
@@ -364,6 +433,37 @@
       "title": "SkyClouds",
       "type": "object"
     },
+    "SkyStars": {
+      "additionalProperties": false,
+      "description": "The stars of the night sky. They come out as the sun goes down, so\nnothing here says whether it is night: `lighting` does.",
+      "properties": {
+        "density": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Density",
+          "type": "number"
+        },
+        "brightness": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Brightness",
+          "type": "number"
+        },
+        "milky_way": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Milky Way",
+          "type": "number"
+        }
+      },
+      "required": [
+        "density",
+        "brightness",
+        "milky_way"
+      ],
+      "title": "SkyStars",
+      "type": "object"
+    },
     "Skybox": {
       "additionalProperties": false,
       "properties": {
@@ -509,12 +609,37 @@
       ],
       "title": "Water",
       "type": "object"
+    },
+    "Weather": {
+      "additionalProperties": false,
+      "properties": {
+        "precipitation": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Precipitation",
+          "type": "number"
+        },
+        "kind": {
+          "enum": [
+            "rain",
+            "snow"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "precipitation",
+        "kind"
+      ],
+      "title": "Weather",
+      "type": "object"
     }
   },
   "additionalProperties": false,
   "properties": {
     "spec_version": {
-      "default": "0.1",
+      "default": "0.2",
       "title": "Spec Version",
       "type": "string"
     },
@@ -570,6 +695,9 @@
     "lighting": {
       "$ref": "#/$defs/Lighting"
     },
+    "weather": {
+      "$ref": "#/$defs/Weather"
+    },
     "spatial": {
       "$ref": "#/$defs/Spatial"
     },
@@ -596,6 +724,7 @@
     "terrain",
     "props",
     "lighting",
+    "weather",
     "spatial",
     "audio",
     "motion",
