@@ -25,8 +25,8 @@ from ..clients.image_gen import SkyboxRequest, SlurmImageGenClient
 from ..config import AppConfig, load_config
 from ..manifest import read_manifest
 from ..models import SceneSpec
-from ..outputs import relative_to_out, scene_dir, scene_spec_path
-from ..pipeline import ScenePipeline, scene_id_for
+from ..outputs import relative_to_out, scene_dir, scene_spec_path, seconds_since
+from ..pipeline import UNFINISHED, ScenePipeline, scene_id_for
 from .jobs import JobRunner, SkyboxJob
 from .models import (
     HealthResponse,
@@ -43,10 +43,17 @@ from .scenes import SceneInProgress, SceneJob, SceneRunner
 # uvicorn's own logger, so these lines show up in the server console.
 log = logging.getLogger("uvicorn.error")
 
-# How long the GET that starts a missing scene waits for it. A procedural scene
-# takes milliseconds, so it is answered "ready" at once instead of sending
-# Unity off to ask again later. A panorama takes minutes and isn't waited for.
+# How long the GET that starts a scene waits for it. A procedural scene takes
+# milliseconds, so it is answered "ready" at once instead of sending Unity off
+# to ask again later. A panorama takes minutes and isn't waited for.
 AUTO_CREATE_WAIT_S = 2.0
+
+# A scene that fell back to the procedural sky gets its 360 image tried again
+# when it is asked for and Pegasus can be reached, but not this soon after the
+# last attempt. Unity asks every few seconds while a scene is generating, and
+# the question that follows a failed attempt has to be answered with the
+# fallback, not with yet another attempt.
+FALLBACK_RETRY_AFTER_S = 60.0
 
 
 def create_app(
@@ -139,9 +146,30 @@ def create_app(
             raise HTTPException(status_code=409, detail=f"{scene_id} is already being generated")
         return SceneAccepted(scene_id=job.scene_id, status=job.status)
 
-    def create_missing(scene_id: str) -> SceneJob | None:
-        """Start the scene of a participant nobody created one for, from their
-        persona file. None when that is switched off or there is no such file."""
+    def why_build(scene_id: str, entry: dict[str, Any] | None) -> str | None:
+        """Why a scene nobody is generating has to be built before it is
+        answered. None when what the manifest has for it stands."""
+        if entry is None:
+            return "no scene yet"
+        if entry.get("error") == UNFINISHED:
+            return "its generation was cut short"
+        if entry["status"] == "failed":
+            return None  # the same persona would fail the same way
+        if _files_missing(config.out_dir, scene_id, entry):
+            return "its files are gone"
+        if (
+            entry["status"] == "fallback"
+            and seconds_since(entry.get("updated_at")) >= FALLBACK_RETRY_AFTER_S
+            and client.status().connected
+        ):
+            return "no 360 image yet and Pegasus can be reached"
+        return None
+
+    def build_if_needed(scene_id: str, entry: dict[str, Any] | None) -> SceneJob | None:
+        """Start a scene nobody is generating, from the participant's persona
+        file, when there is none to answer with or its 360 image can be made
+        after all. None when nothing was started: there is no need, building
+        on request is switched off, or there is no such file."""
         auto = config.auto_create
         if auto is None:
             return None
@@ -151,24 +179,48 @@ def create_app(
             return None
         if not path.is_file():
             return None
+        why = why_build(scene_id, entry)
+        if why is None:
+            return None
         raw = _read_persona(str(path))
-        log.info("%s: no scene yet, building it from %s", scene_id, path)
-        # replace=False: two requests for the same missing scene start it once.
-        scenes.submit(SceneJob(scene_id, None, raw, auto.sky_mode), replace=False)
+
+        sky_mode, seed = auto.sky_mode, None
+        if entry is not None:
+            # The scene it was: the sky that was asked for (a fallback was
+            # asked for as a panorama), and the seed. A Slurm job still out
+            # there is only picked up by a run with its seed.
+            fell_back = entry["status"] == "fallback"
+            sky_mode = "panorama" if fell_back else entry.get("sky_mode", "panorama")
+            seed = entry.get("seed")
+            if seed is None:
+                spec = _read_spec(config.out_dir, scene_id)
+                seed = spec.seed if spec is not None else None
+
+        log.info("%s: %s, building it from %s", scene_id, why, path)
+        try:
+            scenes.submit(SceneJob(scene_id, seed, raw, sky_mode))
+        except SceneInProgress:
+            pass  # another request started it in the meantime
         return scenes.wait(scene_id, AUTO_CREATE_WAIT_S)
 
     @app.get("/scenes/{scene_id}", response_model=SceneResponse)
     def get_scene(scene_id: str) -> SceneResponse:
         """Everything for one participant: status, Slurm progress, persona, spec, files.
 
-        With `auto_create` configured, a scene nobody created yet is built now,
-        from that participant's persona file.
+        With `auto_create` configured, the scene is built now, from that
+        participant's persona file, when there is none to answer with: nobody
+        created it, its files are gone, or its generation was cut short. A
+        scene that fell back to the procedural sky is built again once Pegasus
+        can be reached, so it gets its 360 image whenever one can be made.
         """
         job = scenes.get(scene_id)
-        if job is None:
-            # Not in memory (e.g. after a restart): answer from the files on disk.
+        if job is None or not job.active:
             entry = read_manifest(config.out_dir).get(scene_id)
-            if entry is not None:
+            job = build_if_needed(scene_id, entry) or job
+            if job is None:
+                if entry is None:
+                    raise HTTPException(status_code=404, detail=f"unknown scene {scene_id!r}")
+                # Not in memory (e.g. after a restart): answer from the files on disk.
                 return SceneResponse(
                     scene_id=scene_id,
                     status=(
@@ -180,9 +232,6 @@ def create_app(
                     files=entry.get("files", []),
                     error=entry.get("error"),
                 )
-            job = create_missing(scene_id)
-            if job is None:
-                raise HTTPException(status_code=404, detail=f"unknown scene {scene_id!r}")
         return SceneResponse(
             scene_id=job.scene_id, status=job.status, detail=job.detail,
             persona=job.persona, spec=job.spec, files=job.files, error=job.error,
@@ -242,6 +291,15 @@ def _read_persona(persona_file: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise HTTPException(status_code=422, detail=f"{persona_file} is not a JSON object")
     return raw
+
+
+def _files_missing(out_dir: Path, scene_id: str, entry: dict[str, Any]) -> bool:
+    """Whether a file the manifest lists for the scene is not on disk."""
+    try:
+        folder = scene_dir(out_dir, scene_id)
+    except ValueError:
+        return False
+    return not all((folder / name).is_file() for name in entry.get("files", []))
 
 
 def _read_spec(out_dir: Path, scene_id: str) -> SceneSpec | None:

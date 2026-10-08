@@ -68,5 +68,17 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     write_bytes_atomic(path, (json.dumps(payload, indent=2) + "\n").encode("utf-8"))
 
 
+_UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime(_UTC_FORMAT)
+
+
+def seconds_since(stamp: str | None) -> float:
+    """Since a utc_now_iso() stamp. A missing or unreadable one counts as long ago."""
+    try:
+        then = datetime.strptime(stamp or "", _UTC_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return float("inf")
+    return (datetime.now(timezone.utc) - then).total_seconds()

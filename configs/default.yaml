@@ -5,11 +5,15 @@
 
 out_dir: out
 
-# A scene Unity asks for that nobody created yet is built on the spot, from
-# <personas_dir>/<participant id>.json. Remove this block to turn that off: an
-# unknown participant is then a 404 until the scene is POSTed or batched.
+# A scene Unity asks for is built on the spot, from
+# <personas_dir>/<participant id>.json, when nobody created it yet or its files
+# are gone. One that fell back to the procedural sky is built again as soon as
+# Pegasus can be reached, so it gets its image. Remove this block to turn all
+# of that off: an unknown participant is then a 404 until the scene is POSTed
+# or batched.
 auto_create:
   personas_dir: fixtures/personas/chatbot
+  # The sky of a scene nobody created yet.
   # panorama: the skybox is generated on Pegasus when the connection is open;
   #   when it isn't, the scene falls back to the procedural sky.
   # procedural: never an image, only the scene's spec.

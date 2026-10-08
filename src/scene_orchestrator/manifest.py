@@ -14,8 +14,8 @@ status is ok | failed | fallback:
 
 sky_mode is the mode of the spec on disk, so "procedural" for a fallback.
 Entries that are not ok carry an "error". File names are relative to
-out/<scene_id>/. Unity never has to know whether generation worked: it reads
-the status and the spec's sky_mode.
+out/<scene_id>/. Unity never has to know whether generation worked: it shows
+the image when the spec names one, and the spec's procedural sky when not.
 
 An entry may also carry "slurm_job_id" and "seed": a skybox job that was
 submitted and not seen to finish (the scene is still being generated, the

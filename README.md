@@ -74,8 +74,10 @@ persona (file or inline) → ChatbotV2Adapter → RuleSpecMapper → TemplatePro
   block and its `personas_dir` holds `P01.json`. So Unity can ask for a participant straight away.
   The sky is `auto_create.sky_mode`. With `panorama` (the default) the skybox is generated on
   Pegasus if the connection is open, and Unity waits for it; if it isn't, the scene falls back to
-  the procedural sky and is `ready` at once. A scene that already exists, fallbacks and `failed`
-  ones included, is never rebuilt this way; `POST /scenes` or the batch runner replaces it.
+  the procedural sky and is `ready` at once.
+- That `GET` also builds a scene again when what is on disk can't answer it, or when a scene
+  without its image can get one after all: see
+  [When a scene is built again](#when-a-scene-is-built-again).
 - `scene_spec.json` carries the prompt (`skybox.prompt`) and the image's file name (`skybox.uri`).
 - Every outcome ends in `out/manifest.json`, which is what Unity reads. A scene is entered as
   `failed` ("did not finish") when it starts and overwritten when it ends, so even a crash leaves an
@@ -94,7 +96,7 @@ persona (file or inline) → ChatbotV2Adapter → RuleSpecMapper → TemplatePro
 
 ### Two skies
 
-`sky_mode` says which sky Unity renders:
+`sky_mode` says which sky is made for the scene:
 
 - `"panorama"` (the default): the generated 360° image, `skybox` in the spec.
 - `"procedural"`: a sky drawn by a shader in the Unity project (colour gradient, sun, moon, stars,
@@ -103,9 +105,11 @@ persona (file or inline) → ChatbotV2Adapter → RuleSpecMapper → TemplatePro
   `ready`.
 
 `procedural_sky` is filled in on **every** spec, from the same persona, whichever mode was asked
-for. So the two modes can be compared for one participant, and a panorama that can't be made
-doesn't cost the scene: after the usual retry, the spec is written with `sky_mode` flipped to
-`"procedural"` and the manifest says `fallback`.
+for, so a panorama scene carries both skies. Unity shows the image whenever the spec names one
+(`skybox.uri`), and draws the procedural sky when it doesn't. So the two modes can be compared for
+one participant, and a panorama that can't be made doesn't cost the scene: after the usual retry,
+the spec is written with `sky_mode` flipped to `"procedural"` and the manifest says `fallback`.
+Its image is tried again later, when Unity asks for the scene and Pegasus can be reached.
 
 | Manifest `status` | Meaning | `GET /scenes` |
 | --- | --- | --- |
@@ -117,6 +121,29 @@ The manifest's `sky_mode` is the mode of the spec on disk, so `"procedural"` for
 the sun and the moon stand, the time of day, the light's colour and strength, fog and rain are in
 `lighting` and `weather`, which both modes read; `procedural_sky` holds only what the sky shader
 needs on top.
+
+### When a scene is built again
+
+With `auto_create`, `GET /scenes/P01` builds the scene again, from `personas_dir/P01.json`, in
+these cases. Unity only has to ask: it waits while the scene is generating.
+
+| What the manifest and `out/P01/` have | What the `GET` does |
+| --- | --- |
+| A listed file is gone, e.g. `out/P01/` was deleted | Builds it again, with the sky it was asked for |
+| `fallback`, and Pegasus can be reached | Builds it again as a panorama, so it gets its image |
+| `failed` with "generation started but did not finish": the server stopped mid-way | Picks it up, its Slurm job included |
+| `failed` for any other reason | Nothing: the same persona would fail the same way. `POST /scenes` replaces it |
+| `ok`, all files there | Nothing |
+
+- A fallback is not tried again within a minute of its last attempt
+  (`FALLBACK_RETRY_AFTER_S` in [`app.py`](src/scene_orchestrator/api/app.py)). Unity asks every
+  few seconds while it waits, and the question after a failed attempt has to get the procedural
+  scene, not start another attempt.
+- A scene whose spec is still on disk keeps its seed. One whose files are gone gets the seed
+  derived from the participant id, as a new scene does.
+- A scene that was asked for as `procedural` is `ok`, not a fallback, so it stays procedural.
+- Without the `auto_create` block, or without a persona file for the participant, nothing is
+  built again and the `GET` answers from the manifest as it is.
 
 ### Time of day and weather
 
@@ -240,9 +267,10 @@ and generating that scene again (same seed) picks the job up instead of submitti
 image-gen lives there (repo, venv, weights, output), and the GPU job's partition, account and time
 limit. Point `SCENE_ORCHESTRATOR_CONFIG` at another file to use different settings.
 
-Its `auto_create` block names the folder of `<participant_id>.json` personas that missing scenes
-are built from, and their sky mode. It points at the fixtures; for the study, point it at the
-chatbot's output. Without the block, an unknown participant is a 404.
+Its `auto_create` block names the folder of `<participant_id>.json` personas that scenes are built
+from when Unity asks for them, and the sky mode of a scene nobody created yet. It points at the
+fixtures; for the study, point it at the chatbot's output. Without the block, an unknown
+participant is a 404 and no scene is built again.
 
 ## Output
 
@@ -276,7 +304,7 @@ A test fails while the committed schema is out of date.
 | Route | Purpose |
 | --- | --- |
 | `POST /scenes` | `{persona_file \| persona, seed?, sky_mode?}` → `202` + `{scene_id, status}`; the whole pipeline in the background |
-| `GET /scenes/{participant_id}` | Everything for one participant: `queued` → `building_spec` → `generating_image` (panorama only) → `ready` \| `failed`, Slurm progress, persona, spec, files, error. With `auto_create`, builds the scene first if there is none |
+| `GET /scenes/{participant_id}` | Everything for one participant: `queued` → `building_spec` → `generating_image` (panorama only) → `ready` \| `failed`, Slurm progress, persona, spec, files, error. With `auto_create`, builds the scene first if there is none, and [again](#when-a-scene-is-built-again) if its files are gone or its image can be made after all |
 | `GET /scenes/{participant_id}/files/{name}` | Download one file listed in `files`, e.g. the skybox PNG. Unlisted names get 404 |
 | `POST /skyboxes` | `{prompt, seed, scene_id}` → `202` + job; generation runs in the background |
 | `GET /skyboxes/{id}` | `queued` → `generating_image` → `ready` \| `failed`, with progress, files or error |
@@ -343,12 +371,15 @@ P03 is missing a dimension on purpose: its scene fails, with the reason.
 
 ### Generated sky (needs the VPN and the cluster)
 
-Run the server in WSL with the shared SSH connection open (see [Run](#run)), then repeat steps
-3 to 6 with `"sky_mode": "panorama"`. Step 4 takes minutes: wait until it says `ready` and lists a
-`skybox_<seed>.png`. The Console line then says `sky: image skybox_<seed>.png`.
+Run the server in WSL with the shared SSH connection open (see [Run](#run)), then press **Fetch**
+(step 5). A participant with no scene yet, or with one that fell back to the procedural sky,
+gets the image now: Unity waits, which takes minutes, and the Console line then says
+`sky: image skybox_<seed>.png`. To watch it, open <http://127.0.0.1:8001/scenes/P01> until it says
+`ready` and lists a `skybox_<seed>.png`.
 
-Each POST replaces the participant's previous scene, so switching sky is: POST again with the
-other `sky_mode`, then Fetch again.
+A scene that was POSTed as `procedural` (step 3) stays procedural. Each POST replaces the
+participant's previous scene, so switching sky is: POST again with the other `sky_mode`, then
+Fetch again.
 
 ### If something looks wrong
 
@@ -356,7 +387,7 @@ other `sky_mode`, then Fetch again.
 | --- | --- |
 | Unity: "No scene for participant P01" | No scene, and no `P01.json` in `auto_create.personas_dir` to build one from (ids are case-sensitive). Add the persona, or do step 3 |
 | Unity: "Orchestrator not reachable. Using P01's files from an earlier fetch" | The server isn't running, so you're looking at old files. Do step 2 |
-| Unity: "ready, with Unity's own sky: the 360 image could not be made" | You asked for `panorama` but the cluster couldn't be reached, so it fell back to procedural |
+| Unity: "ready, with Unity's own sky: the 360 image could not be made" | The image was wanted but couldn't be made, so the scene fell back to procedural; the Console warning says why. Fix that (usually the SSH connection), wait a minute, and Fetch again: the image is tried again |
 | Console: `sky: none, the scene's own sky kept` | An old spec from before sky modes. Create the scene again (step 3) |
 | Pressing Play directly in `ExperimentScene` | Nothing is fetched; it shows the files of the last fetch |
 

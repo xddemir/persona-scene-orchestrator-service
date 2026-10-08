@@ -11,6 +11,7 @@ before it. A panorama that cannot be made falls back to the procedural sky.
 from __future__ import annotations
 
 import json
+import shutil
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from fastapi.testclient import TestClient
 from fakes import PNG, FakePegasus, make_client
 from scene_orchestrator.api.app import create_app
 from scene_orchestrator.config import AutoCreateConfig
-from scene_orchestrator.manifest import read_manifest
+from scene_orchestrator.manifest import manifest_path, read_manifest
 from scene_orchestrator.mapping import RuleSpecMapper
 from scene_orchestrator.models import SceneSpec
 from scene_orchestrator.pipeline import UNFINISHED, ScenePipeline, derive_seed
@@ -468,3 +469,170 @@ def test_a_missing_scene_whose_persona_wont_convert_is_failed(config):
         scene = client.get("/scenes/P03").json()
     assert scene["status"] == "failed"
     assert "Agreeableness" in scene["error"]
+
+
+# -- a scene Unity asks for that can't be answered with what is on disk -----
+
+
+def _fetch(client, scene_id) -> dict:
+    """Ask the way Unity does: again, for as long as the scene is generating."""
+    while True:
+        scene = client.get(f"/scenes/{scene_id}").json()
+        if scene["status"] in ("ready", "failed"):
+            return scene
+        assert client.app.state.scenes.wait_idle()
+
+
+def _much_later(out_dir, scene_id):
+    """Date the scene's manifest entry back, past the wait before a fallback's
+    image is tried again."""
+    manifest = read_manifest(out_dir)
+    manifest[scene_id]["updated_at"] = "2026-01-01T00:00:00Z"
+    manifest_path(out_dir).write_text(json.dumps(manifest))
+
+
+@pytest.mark.parametrize("deleted", ["P04", "."])  # its folder, or all of out/
+def test_a_scene_whose_files_are_gone_is_built_again(config, out_dir, deleted):
+    with _serve(_auto(config)) as client:
+        client.get("/scenes/P04")
+        shutil.rmtree(out_dir / deleted)
+
+        scene = _fetch(client, "P04")  # not answered from memory
+        assert scene["status"] == "ready"
+        assert client.get("/scenes/P04/files/scene_spec.json").status_code == 200
+    assert read_manifest(out_dir)["P04"]["status"] == "ok"
+
+
+def test_a_scene_missing_only_its_image_is_built_again(config, out_dir):
+    pegasus = FakePegasus()
+    with _serve(_auto(config, "panorama"), pegasus) as client:
+        png = _fetch(client, "P04")["spec"]["skybox"]["uri"]
+        (out_dir / "P04" / png).unlink()
+
+        scene = _fetch(client, "P04")
+        assert client.get(f"/scenes/P04/files/{png}").content == PNG
+    assert scene["spec"]["skybox"]["uri"] == png
+    assert len(pegasus.submitted) == 2
+
+
+def test_a_deleted_fallback_scene_comes_back_with_its_image(config, out_dir):
+    """Made without the connection, its folder deleted from out/ (the manifest
+    still lists it), asked for again with the connection open."""
+    pegasus = FakePegasus(connected=False)
+    with _serve(_auto(config, "panorama"), pegasus) as client:
+        assert _fetch(client, "P02")["spec"]["sky_mode"] == "procedural"
+    shutil.rmtree(out_dir / "P02")
+
+    pegasus.connected = True
+    with _serve(_auto(config, "panorama"), pegasus) as fresh:
+        scene = _fetch(fresh, "P02")
+        for name in scene["files"]:
+            assert fresh.get(f"/scenes/P02/files/{name}").status_code == 200
+
+    seed = derive_seed("P02")
+    assert scene["status"] == "ready" and scene["error"] is None
+    assert scene["spec"]["sky_mode"] == "panorama"
+    assert scene["files"] == ["scene_spec.json", f"skybox_{seed}.png", f"skybox_{seed}.json"]
+
+
+def test_a_fallback_scene_gets_its_image_once_pegasus_can_be_reached(config, out_dir):
+    pegasus = FakePegasus(connected=False)
+    with _serve(_auto(config, "panorama"), pegasus) as client:
+        assert _fetch(client, "P04")["spec"]["sky_mode"] == "procedural"
+        _much_later(out_dir, "P04")
+        assert _fetch(client, "P04")["spec"]["sky_mode"] == "procedural"  # still no connection
+        assert pegasus.submitted == []
+
+        pegasus.connected = True
+        scene = _fetch(client, "P04")
+
+    assert scene["status"] == "ready" and scene["error"] is None
+    assert scene["spec"]["sky_mode"] == "panorama"
+    assert scene["spec"]["skybox"]["uri"] == f"skybox_{derive_seed('P04')}.png"
+    assert scene["spec"]["procedural_sky"] is not None  # both skies on the one spec
+    entry = read_manifest(out_dir)["P04"]
+    assert entry["status"] == "ok" and entry["sky_mode"] == "panorama"
+    assert len(pegasus.submitted) == 1
+
+
+def test_the_image_is_tried_again_after_a_restart_too(config, out_dir):
+    with _serve(_auto(config, "panorama"), FakePegasus(connected=False)) as client:
+        _fetch(client, "P04")
+    _much_later(out_dir, "P04")
+    with _serve(_auto(config, "panorama"), FakePegasus()) as fresh:
+        assert _fetch(fresh, "P04")["spec"]["sky_mode"] == "panorama"
+
+
+def test_a_failed_attempt_is_not_repeated_by_the_next_question(config, out_dir):
+    """Unity asks again every few seconds: after an attempt that failed, it has
+    to get the fallback, not set off another attempt."""
+    pegasus = FakePegasus(jobs=[("FAILED",)])  # reachable, but no job succeeds
+    with _serve(_auto(config, "panorama"), pegasus) as client:
+        first = _fetch(client, "P04")
+        again = _fetch(client, "P04")
+        assert client.app.state.scenes.wait_idle()
+
+        assert len(pegasus.submitted) == 2  # the one attempt, with its retry
+        assert first["status"] == again["status"] == "ready"
+        assert again["spec"]["sky_mode"] == "procedural"
+        assert "CUDA out of memory" in again["error"]
+
+        _much_later(out_dir, "P04")
+        _fetch(client, "P04")
+        assert len(pegasus.submitted) == 4  # asked for again later: one more attempt
+
+
+def test_the_image_is_tried_again_for_the_same_seed(config, out_dir):
+    pegasus = FakePegasus(connected=False)
+    with _serve(_auto(config, "panorama"), pegasus) as client:
+        _run(client, persona_file=_persona_file("P04"), seed=7)
+        _much_later(out_dir, "P04")
+        pegasus.connected = True
+        scene = _fetch(client, "P04")
+    assert scene["spec"]["seed"] == 7
+    assert scene["spec"]["skybox"]["uri"] == "skybox_7.png"
+
+
+def test_a_scene_asked_for_as_procedural_stays_procedural(config, out_dir):
+    pegasus = FakePegasus()  # reachable all along
+    with _serve(_auto(config, "panorama"), pegasus) as client:
+        _run(client, persona_file=_persona_file("P04"), sky_mode="procedural")
+        _much_later(out_dir, "P04")
+        scene = _fetch(client, "P04")
+    assert scene["spec"]["sky_mode"] == "procedural"
+    assert pegasus.submitted == []
+
+
+def test_a_scene_cut_short_by_a_restart_is_picked_up(config, out_dir):
+    pegasus = FakePegasus(jobs=[("RUNNING", "COMPLETED")])
+    answer, stopped = pegasus._sacct, []
+
+    def sacct(job_id):
+        if not stopped:
+            stopped.append(job_id)
+            raise KeyboardInterrupt  # the server is stopped while the job runs
+        return answer(job_id)
+
+    pegasus._sacct = sacct
+    with pytest.raises(KeyboardInterrupt):
+        ScenePipeline(make_client(pegasus), out_dir).run(_raw("P04"), "P04")
+    entry = read_manifest(out_dir)["P04"]
+    assert entry["error"] == UNFINISHED and entry["slurm_job_id"] == "123456"
+
+    with _serve(_auto(config, "panorama"), pegasus) as restarted:
+        scene = _fetch(restarted, "P04")
+
+    assert scene["status"] == "ready"
+    assert scene["spec"]["skybox"]["uri"] == f"skybox_{derive_seed('P04')}.png"
+    assert len(pegasus.submitted) == 1  # the job from before, not a second one
+
+
+def test_without_auto_create_nothing_is_built_again(config, out_dir):
+    with _serve(config, FakePegasus(connected=False)) as client:
+        _run(client, persona_file=_persona_file("P04"))
+    _much_later(out_dir, "P04")
+    pegasus = FakePegasus()
+    with _serve(config, pegasus) as fresh:
+        scene = fresh.get("/scenes/P04").json()
+    assert scene["spec"]["sky_mode"] == "procedural"
+    assert pegasus.submitted == []

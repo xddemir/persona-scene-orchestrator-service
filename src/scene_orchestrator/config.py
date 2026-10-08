@@ -57,14 +57,18 @@ class ImageGenConfig(BaseModel):
 
 
 class AutoCreateConfig(BaseModel):
-    """Building a scene the moment Unity asks for one nobody created yet."""
+    """Building a scene the moment Unity asks for one that isn't there to
+    answer with: nobody created it yet, its files are gone, or it fell back to
+    the procedural sky and Pegasus can be reached now."""
 
     model_config = ConfigDict(extra="forbid")
 
     # Holds <participant_id>.json, like the batch runner's --personas folder.
     personas_dir: Path
-    # As for POST /scenes. Without a connection to Pegasus a panorama scene
-    # falls back to the procedural sky, so a scene is built either way.
+    # Of a scene nobody created yet, as for POST /scenes; one built again
+    # keeps the sky it was asked for. Without a connection to Pegasus a
+    # panorama scene falls back to the procedural sky, so a scene is built
+    # either way.
     sky_mode: SkyMode = "panorama"
 
 
@@ -72,7 +76,8 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     out_dir: Path = Path("out")
-    # Left out: GET /scenes/{id} for a scene nobody created is a 404.
+    # Left out: GET /scenes/{id} builds nothing, and a scene nobody created
+    # is a 404.
     auto_create: AutoCreateConfig | None = None
     image_gen: ImageGenConfig
 

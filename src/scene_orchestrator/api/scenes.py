@@ -43,6 +43,11 @@ class SceneJob:
     created_at: str = field(default_factory=utc_now_iso)
     finished_at: str | None = None
 
+    @property
+    def active(self) -> bool:
+        """Queued or running, as opposed to finished."""
+        return self.status in _ACTIVE
+
 
 class SceneRunner:
     def __init__(self, pipeline: ScenePipeline) -> None:
@@ -63,14 +68,11 @@ class SceneRunner:
             self._thread.join(timeout=timeout)
             self._thread = None
 
-    def submit(self, job: SceneJob, *, replace: bool = True) -> SceneJob:
-        """With replace=False, a scene that already has a job keeps it: that
-        job is returned and nothing is queued."""
+    def submit(self, job: SceneJob) -> SceneJob:
+        """Replaces the scene's finished job, if it has one."""
         with self._lock:
             current = self._jobs.get(job.scene_id)
-            if current is not None and not replace:
-                return dataclasses.replace(current)
-            if current is not None and current.status in _ACTIVE:
+            if current is not None and current.active:
                 # Two runs would write the same folder and manifest entry.
                 raise SceneInProgress(job.scene_id)
             self._jobs[job.scene_id] = job
@@ -88,7 +90,7 @@ class SceneRunner:
         deadline = time.monotonic() + timeout
         while True:
             job = self.get(scene_id)
-            if job is None or job.status not in _ACTIVE or time.monotonic() >= deadline:
+            if job is None or not job.active or time.monotonic() >= deadline:
                 return job
             time.sleep(0.02)
 
@@ -97,7 +99,7 @@ class SceneRunner:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self._lock:
-                if not any(j.status in _ACTIVE for j in self._jobs.values()):
+                if not any(j.active for j in self._jobs.values()):
                     return True
             time.sleep(0.02)
         return False
