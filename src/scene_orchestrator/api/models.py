@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..clients.image_gen import ImageGenStatus
-from ..models import PersonaProfile, SceneSpec, SkyMode
+from ..models import MAX_SEED, PersonaProfile, SceneSpec, SkyMode
 from ..outputs import SCENE_ID_PATTERN
 
 # -- /scenes ----------------------------------------------------------------
@@ -39,7 +39,7 @@ class SceneBody(BaseModel):
     # Or the same JSON inline.
     persona: dict[str, Any] | None = None
     # Omitted: derived from the participant id, so it is stable.
-    seed: int | None = Field(default=None, ge=0)
+    seed: int | None = Field(default=None, ge=0, le=MAX_SEED)
     # "procedural" makes no image: the scene uses Unity's own sky, set up from
     # the spec's procedural_sky block.
     sky_mode: SkyMode = "panorama"

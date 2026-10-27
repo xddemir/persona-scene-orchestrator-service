@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -36,12 +37,16 @@ def _spec(alias: str) -> SceneSpec:
     return RuleSpecMapper().map(ChatbotV2Adapter().adapt(raw), 1234, alias.lower())
 
 
+def _persona(**traits) -> PersonaProfile:
+    values = dict.fromkeys(TRAITS, 0.5)
+    values.update(traits)
+    return PersonaProfile(participant_id="t", source="stub", traits=Traits(**values))
+
+
 def _all_specs():
     """Specs across the whole trait space, every biome tier, several seeds."""
     for values in itertools.product((0.0, 0.5, 1.0), repeat=5):
-        persona = PersonaProfile(
-            participant_id="t", source="stub", traits=Traits(**dict(zip(TRAITS, values)))
-        )
+        persona = _persona(**dict(zip(TRAITS, values)))
         for seed in (0, 1, 2):
             yield RuleSpecMapper().map(persona, seed, "t")
 
@@ -49,12 +54,25 @@ def _all_specs():
 # -- the fixtures -----------------------------------------------------------
 
 
-def test_p01_prompt_is_sheltered_before_sunrise_and_misty():
-    prompt = BUILDER.build(_spec("P01"))
+def test_p01_prompt_is_sheltered_before_sunrise():
+    spec = _spec("P01")  # at this seed: a rocky shore, so a beach
+    prompt = BUILDER.build(spec)
     assert "sheltered" in prompt
     assert "at dawn before sunrise" in prompt
     assert "mostly cloudy sky" in prompt
+    # No sun is named under a closed sky, so the sea is just ahead.
+    assert "a beach, the open sea ahead" in prompt
+    # The beach caps the fog, so the horizon still shows.
+    assert spec.archetype == "beach"
+    assert "clear air" in prompt
+
+
+def test_an_anxious_persona_in_a_hollow_is_misty():
+    spec = RuleSpecMapper().map(_persona(openness=0.1, neuroticism=0.9), 1, "t")
+    assert spec.archetype == "hollow"
+    prompt = BUILDER.build(spec)
     assert "heavy drifting mist" in prompt
+    assert "seen from a hollow among low hills" in prompt
 
 
 def test_p02_prompt_is_open_bright_and_clear():
@@ -119,6 +137,38 @@ def test_the_sky_named_is_one_that_can_be_seen(spec):
     else:
         assert not falling  # nothing falls from an open sky
     assert ("at night" in prompt) == (spec.lighting.time_of_day == "night")
+
+
+# -- the view agrees with the land ------------------------------------------
+
+
+def test_a_summit_is_seen_from_the_mountain_top():
+    specs = [RuleSpecMapper().map(_persona(openness=0.95, neuroticism=0.1), s, "t")
+             for s in range(20)]
+    summits = [s for s in specs if s.archetype == "summit"]
+    assert summits
+    for spec in summits:
+        assert "seen from a high mountain top" in BUILDER.build(spec)
+
+
+def test_a_beach_at_sunset_looks_over_the_sea_into_the_sunset():
+    persona = _persona(openness=0.9, neuroticism=0.1, extraversion=0.42, conscientiousness=0.1)
+    beaches = [spec for spec in (RuleSpecMapper().map(persona, s, "t") for s in range(30))
+               if spec.archetype == "beach"]
+    assert beaches
+    for spec in beaches:
+        assert spec.lighting.time_of_day == "sunset"
+        assert "a beach, the sea toward the setting sun" in BUILDER.build(spec)
+
+
+@pytest.mark.parametrize("spec", list(_all_specs()))
+def test_the_prompt_names_only_the_water_the_land_has(spec):
+    """No sea in a forest panorama, no lake where Unity lays a river."""
+    prompt = BUILDER.build(spec)
+    kind = spec.terrain.water.kind
+    assert bool(re.search(r"\bsea\b", prompt)) == (kind == "sea")
+    assert bool(re.search(r"\blake", prompt)) == (kind == "lake")
+    assert bool(re.search(r"\briver", prompt)) == (kind == "river")
 
 
 # -- shape of every prompt --------------------------------------------------

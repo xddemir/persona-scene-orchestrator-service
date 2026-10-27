@@ -14,6 +14,34 @@
       "title": "Activity",
       "type": "object"
     },
+    "Anchor": {
+      "additionalProperties": false,
+      "description": "One prop placed on purpose, seen from where the participant sits.",
+      "properties": {
+        "asset": {
+          "title": "Asset",
+          "type": "string"
+        },
+        "distance_m": {
+          "minimum": 0.0,
+          "title": "Distance M",
+          "type": "number"
+        },
+        "azimuth_deg": {
+          "maximum": 360.0,
+          "minimum": 0.0,
+          "title": "Azimuth Deg",
+          "type": "number"
+        }
+      },
+      "required": [
+        "asset",
+        "distance_m",
+        "azimuth_deg"
+      ],
+      "title": "Anchor",
+      "type": "object"
+    },
     "AudioLayer": {
       "additionalProperties": false,
       "properties": {
@@ -550,6 +578,19 @@
           ],
           "title": "Prospect Refuge Bias",
           "type": "string"
+        },
+        "silhouette_distance_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Silhouette Distance M"
         }
       },
       "required": [
@@ -558,6 +599,35 @@
         "prospect_refuge_bias"
       ],
       "title": "Spatial",
+      "type": "object"
+    },
+    "Spawn": {
+      "additionalProperties": false,
+      "description": "Where the participant sits and which way they look. Unity reads\nfacing_deg only when placement is set, so both are required.",
+      "properties": {
+        "placement": {
+          "enum": [
+            "centre",
+            "basin_floor",
+            "crest",
+            "summit",
+            "shore"
+          ],
+          "title": "Placement",
+          "type": "string"
+        },
+        "facing_deg": {
+          "maximum": 360.0,
+          "minimum": 0.0,
+          "title": "Facing Deg",
+          "type": "number"
+        }
+      },
+      "required": [
+        "placement",
+        "facing_deg"
+      ],
+      "title": "Spawn",
       "type": "object"
     },
     "Terrain": {
@@ -574,23 +644,95 @@
           "type": "string"
         },
         "ground_material": {
-          "title": "Ground Material",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ground Material"
+        },
+        "macro_shape": {
+          "anyOf": [
+            {
+              "enum": [
+                "plain",
+                "bowl",
+                "ridge",
+                "peak",
+                "shore",
+                "terraces"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Macro Shape"
+        },
+        "amplitude_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Amplitude M"
+        },
+        "feature_scale_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Feature Scale M"
+        },
+        "roughness": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Roughness"
         },
         "water": {
           "$ref": "#/$defs/Water"
+        },
+        "spawn": {
+          "$ref": "#/$defs/Spawn"
         }
       },
       "required": [
         "profile",
-        "ground_material",
-        "water"
+        "water",
+        "spawn"
       ],
       "title": "Terrain",
       "type": "object"
     },
     "Water": {
       "additionalProperties": false,
+      "description": "Unity goes by `kind`; `present` says the same thing, for older readers.",
       "properties": {
         "present": {
           "title": "Present",
@@ -601,11 +743,49 @@
           "minimum": 0.0,
           "title": "Motion",
           "type": "number"
+        },
+        "kind": {
+          "enum": [
+            "river",
+            "lake",
+            "sea",
+            "none"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "distance_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Distance M"
+        },
+        "azimuth_deg": {
+          "anyOf": [
+            {
+              "maximum": 360.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Azimuth Deg"
         }
       },
       "required": [
         "present",
-        "motion"
+        "motion",
+        "kind"
       ],
       "title": "Water",
       "type": "object"
@@ -639,7 +819,7 @@
   "additionalProperties": false,
   "properties": {
     "spec_version": {
-      "default": "0.2",
+      "default": "0.3",
       "title": "Spec Version",
       "type": "string"
     },
@@ -649,9 +829,27 @@
       "type": "string"
     },
     "seed": {
+      "maximum": 4294967295,
       "minimum": 0,
       "title": "Seed",
       "type": "integer"
+    },
+    "catalogue_version": {
+      "default": "v1",
+      "title": "Catalogue Version",
+      "type": "string"
+    },
+    "archetype": {
+      "enum": [
+        "hollow",
+        "overlook",
+        "summit",
+        "forest",
+        "meadow",
+        "beach"
+      ],
+      "title": "Archetype",
+      "type": "string"
     },
     "biome": {
       "enum": [
@@ -692,6 +890,12 @@
       "title": "Props",
       "type": "array"
     },
+    "focal": {
+      "$ref": "#/$defs/Anchor"
+    },
+    "framing": {
+      "$ref": "#/$defs/Anchor"
+    },
     "lighting": {
       "$ref": "#/$defs/Lighting"
     },
@@ -718,11 +922,14 @@
   "required": [
     "scene_id",
     "seed",
+    "archetype",
     "biome",
     "skybox",
     "procedural_sky",
     "terrain",
     "props",
+    "focal",
+    "framing",
     "lighting",
     "weather",
     "spatial",

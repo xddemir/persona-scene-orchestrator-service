@@ -2,10 +2,14 @@
 
 from .persona import PersonaProfile, Traits
 from .scene_spec import (
+    MAX_SEED,
     Activity,
+    Anchor,
+    Archetype,
     AudioLayer,
     Lighting,
     Motion,
+    Placement,
     ProceduralSky,
     Prop,
     SceneSpec,
@@ -14,18 +18,24 @@ from .scene_spec import (
     SkyMode,
     SkyStars,
     Spatial,
+    Spawn,
     Terrain,
     TimeOfDay,
     Water,
+    WaterKind,
     Weather,
 )
 
 __all__ = [
+    "MAX_SEED",
     "Activity",
+    "Anchor",
+    "Archetype",
     "AudioLayer",
     "Lighting",
     "Motion",
     "PersonaProfile",
+    "Placement",
     "ProceduralSky",
     "Prop",
     "SceneSpec",
@@ -34,9 +44,11 @@ __all__ = [
     "SkyMode",
     "SkyStars",
     "Spatial",
+    "Spawn",
     "Terrain",
     "TimeOfDay",
     "Traits",
     "Water",
+    "WaterKind",
     "Weather",
 ]

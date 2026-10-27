@@ -5,6 +5,7 @@ from __future__ import annotations
 import colorsys
 import itertools
 import json
+import math
 from pathlib import Path
 from typing import get_args
 
@@ -13,23 +14,30 @@ import pytest
 from scene_orchestrator.adapters import ChatbotV2Adapter
 from scene_orchestrator.mapping import RuleSpecMapper, SpecMapper, rules_markdown
 from scene_orchestrator.mapping.rule_mapper import (
+    ARCHETYPE_BY_BIOME,
     BIOME_GROUND_COLOR,
     BIOME_SKY_HUE,
     BIOME_TIERS,
     BIOMES,
+    CATALOGUE_V1,
+    DAY_SUN_OFFSET_DEG,
+    FOG_CAP,
+    FOG_HORIZON_DEPTH,
+    FRAMING_OFFSET_DEG,
     HORIZON_ACCENT,
     HORIZON_VALUE,
     LINEAR_RULES,
     MOON_AZIMUTH_SPREAD_DEG,
     MOON_COLOR_TEMPERATURE_K,
+    RESERVED_PROPS,
     SKY_TINT_SATURATION,
     SKY_TINT_VALUE,
     SUNRISE_GLOW,
     SUNSET_GLOW,
     _procedural_sky,
 )
-from scene_orchestrator.models import PersonaProfile, SceneSpec, TimeOfDay, Traits
-from scene_orchestrator.models.scene_spec import Biome
+from scene_orchestrator.models import MAX_SEED, PersonaProfile, SceneSpec, TimeOfDay, Traits
+from scene_orchestrator.models.scene_spec import Archetype, Biome, Placement, WaterKind
 from scene_orchestrator.pipeline import derive_seed
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "personas" / "chatbot"
@@ -180,8 +188,9 @@ def test_prospect_refuge_follows_neuroticism(neuroticism, bias):
 
 @pytest.mark.parametrize(
     ("conscientiousness", "distribution"),
-    [(0.2, "scattered"), (0.35, "scattered"), (0.36, "clustered"),
-     (0.65, "clustered"), (0.66, "ringed")],
+    # scattered and ringed go out as poisson and clustered, the two Unity builds
+    [(0.2, "poisson"), (0.35, "poisson"), (0.36, "clustered"),
+     (0.65, "clustered"), (0.66, "clustered")],
 )
 def test_distribution_follows_conscientiousness(conscientiousness, distribution):
     spec = MAPPER.map(_persona(conscientiousness=conscientiousness), 1, "t")
@@ -370,16 +379,202 @@ def test_more_enclosure_means_more_props_closer_in():
     assert closed.props[0].exclude_radius < open_.props[0].exclude_radius
 
 
+# -- the land and the view (0.3) --------------------------------------------
+
+TRAITS = ("openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism")
+
+
+def _all_specs() -> list[SceneSpec]:
+    """Specs across the trait space and several seeds, the largest one included."""
+    return [
+        MAPPER.map(_persona(**dict(zip(TRAITS, values))), seed, "t")
+        for values in itertools.product((0.0, 0.3, 0.5, 0.8, 1.0), repeat=5)
+        if values[3] == 0.5  # agreeableness changes nothing
+        for seed in (0, 1, 2, MAX_SEED)
+    ]
+
+
+ALL_SPECS = _all_specs()
+
+
+def test_fields_from_before_0_3_keep_their_values():
+    """The new draws come after the old ones, and the kits kept their five
+    entries, so a participant's sun, wind, clouds and moon are as they were."""
+    spec = MAPPER.map(_fixture("P01"), derive_seed("P01"), "P01")
+    assert spec.biome == "snowy_valley"
+    # was spruce_snowy, snow_drift, boulder_snowy, deadwood
+    assert [p.asset for p in spec.props] == ["pine_large", "pine_medium", "boulder", "driftwood"]
+    assert spec.lighting.sun_azimuth_deg == 132.879
+    assert spec.motion.wind_direction_deg == 249.092
+    assert spec.procedural_sky.clouds.offset == (48.878, 85.991)
+    assert (spec.lighting.moon_azimuth_deg, spec.lighting.moon_elevation_deg) == (277.732, 29.69)
+
+
+def test_every_name_sent_is_in_the_catalogue():
+    for spec in ALL_SPECS:
+        assert spec.catalogue_version == CATALOGUE_V1.version
+        assert spec.archetype in CATALOGUE_V1.archetypes
+        assets = {p.asset for p in spec.props} | {spec.focal.asset, spec.framing.asset}
+        assert assets <= CATALOGUE_V1.props
+        assert spec.terrain.ground_material is None  # the archetype's
+        assert {p.distribution for p in spec.props} <= {"poisson", "clustered"}
+
+
+def test_the_catalogue_names_what_the_spec_can_carry():
+    assert set(CATALOGUE_V1.archetypes) == set(get_args(Archetype))
+    for setting in CATALOGUE_V1.archetypes.values():
+        assert setting.placement in get_args(Placement)
+        assert setting.water in get_args(WaterKind)
+        assert setting.ground in CATALOGUE_V1.grounds
+
+
+def test_mountains_and_cliffs_are_left_to_unity():
+    assert not RESERVED_PROPS & CATALOGUE_V1.props
+    for spec in ALL_SPECS:
+        assets = {p.asset for p in spec.props} | {spec.focal.asset, spec.framing.asset}
+        assert not assets & {"mountain", "cliff"}
+
+
+def test_every_kit_is_five_different_catalogue_props():
+    for kit in BIOMES.values():
+        assets = [asset for asset, _ in kit.props]
+        assert len(assets) == len(set(assets)) == 5
+        assert set(assets) <= CATALOGUE_V1.props
+        assert kit.tree is None or kit.tree in CATALOGUE_V1.props
+
+
+def test_every_biome_and_bias_has_an_archetype():
+    assert set(ARCHETYPE_BY_BIOME) == set(get_args(Biome))
+    for row in ARCHETYPE_BY_BIOME.values():
+        assert set(row) == {"refuge", "balanced", "prospect"}
+        assert set(row.values()) <= set(CATALOGUE_V1.archetypes)
+
+
+def test_the_archetype_follows_the_biome_and_prospect_refuge():
+    for spec in ALL_SPECS:
+        assert spec.archetype == ARCHETYPE_BY_BIOME[spec.biome][spec.spatial.prospect_refuge_bias]
+
+
+def test_a_calm_open_alpine_persona_sits_on_a_summit():
+    summit = _persona(openness=0.95, neuroticism=0.1)
+    specs = [MAPPER.map(summit, seed, "t") for seed in range(40)]
+    alpine = [s for s in specs if s.biome == "alpine_basin"]
+    assert alpine  # the seed picks the biome within openness' tier
+    for spec in alpine:
+        assert spec.archetype == "summit"
+        assert spec.terrain.spawn.placement == "summit"
+        assert spec.terrain.water.kind == "none"
+
+
+def test_placement_and_water_are_the_archetypes_and_always_sent():
+    for spec in ALL_SPECS:
+        setting = CATALOGUE_V1.archetypes[spec.archetype]
+        water = spec.terrain.water
+        assert spec.terrain.spawn.placement == setting.placement
+        assert water.kind == setting.water
+        assert water.present == (water.kind != "none")
+        assert (water.distance_m, water.azimuth_deg) == (None, None)  # placed by Unity
+        if not water.present:
+            assert water.motion == 0.0
+
+
+def test_the_water_is_heard_only_where_it_is():
+    for spec in ALL_SPECS:
+        layers = {layer.layer for layer in spec.audio}
+        kind = spec.terrain.water.kind
+        assert ("lake_lapping" in layers) == (kind == "lake")
+        assert bool(layers & {"waves_gentle", "waves_rocky"}) == (kind == "sea")
+        assert ("stream" in layers) == (kind == "river")
+
+
+@pytest.mark.parametrize(
+    ("extraversion", "time_of_day"),
+    [(0.27, "sunrise"), (0.44, "sunset"), (0.3, "sunset")],
+)
+def test_a_low_sun_is_faced(extraversion, time_of_day):
+    for seed in range(20):
+        spec = MAPPER.map(_persona(extraversion=extraversion,
+                                   conscientiousness=0.9 if time_of_day == "sunrise" else 0.1),
+                          seed, "t")
+        assert spec.lighting.time_of_day == time_of_day
+        assert spec.terrain.spawn.facing_deg == spec.lighting.sun_azimuth_deg
+
+
+def test_at_night_the_moon_is_faced():
+    for seed in range(20):
+        spec = MAPPER.map(_persona(extraversion=0.0), seed, "t")
+        assert spec.lighting.time_of_day == "night"
+        assert spec.terrain.spawn.facing_deg == spec.lighting.moon_azimuth_deg
+
+
+def _apart(a: float, b: float) -> float:
+    """The angle between two azimuths, 0..180."""
+    return min((a - b) % 360, (b - a) % 360)
+
+
+def test_by_day_the_sun_stands_to_one_side():
+    sides = set()
+    for seed in range(40):
+        spec = MAPPER.map(_persona(extraversion=0.8), seed, "t")
+        facing, sun = spec.terrain.spawn.facing_deg, spec.lighting.sun_azimuth_deg
+        low, high = DAY_SUN_OFFSET_DEG
+        assert low - 0.001 <= _apart(facing, sun) <= high + 0.001
+        sides.add((facing - sun) % 360 < 180)
+    assert sides == {True, False}  # left and right, from the seed
+
+
+def test_the_focal_stands_where_the_participant_faces():
+    for spec in ALL_SPECS:
+        assert spec.focal.azimuth_deg == spec.terrain.spawn.facing_deg
+        assert 25 <= spec.focal.distance_m <= 40
+    calm = MAPPER.map(_persona(neuroticism=0.0), 1, "t").focal
+    anxious = MAPPER.map(_persona(neuroticism=1.0), 1, "t").focal
+    assert (calm.distance_m, anxious.distance_m) == (40, 25)
+
+
+def test_the_focal_is_the_biomes_tree_in_a_forest_or_hollow():
+    for spec in ALL_SPECS:
+        tree = BIOMES[spec.biome].tree
+        if spec.archetype in ("forest", "hollow") and tree:
+            assert spec.focal.asset == tree
+        else:
+            assert spec.focal.asset == "rock_cluster"
+
+
+def test_the_framing_prop_is_close_and_at_the_edge_of_view():
+    sides = set()
+    for spec in ALL_SPECS:
+        framing, facing = spec.framing, spec.terrain.spawn.facing_deg
+        assert 3 <= framing.distance_m <= 5  # what Unity keeps it to
+        low, high = FRAMING_OFFSET_DEG
+        assert low - 0.001 <= _apart(framing.azimuth_deg, facing) <= high + 0.001
+        assert framing.asset == (BIOMES[spec.biome].tree or "rock_cluster")
+        sides.add((framing.azimuth_deg - facing) % 360 < 180)
+    assert sides == {True, False}
+
+
+def test_the_fog_leaves_a_third_of_the_horizon_except_in_a_hollow():
+    for name, setting in CATALOGUE_V1.archetypes.items():
+        if name in FOG_CAP:
+            visible = math.exp(-(FOG_CAP[name] * setting.horizon_m) ** 2)
+            assert 0.28 <= visible <= 0.32
+            assert FOG_CAP[name] == pytest.approx(FOG_HORIZON_DEPTH / setting.horizon_m, abs=5e-5)
+    assert "hollow" not in FOG_CAP
+    for spec in ALL_SPECS:
+        if spec.archetype in FOG_CAP:
+            assert spec.lighting.fog_density <= FOG_CAP[spec.archetype]
+    # In a hollow the fog is the shelter: it still thickens with neuroticism.
+    hollows = [s for s in ALL_SPECS if s.archetype == "hollow"]
+    assert max(s.lighting.fog_density for s in hollows) > 0.04
+
+
 # -- every spec is valid ----------------------------------------------------
 
 
 @pytest.mark.parametrize("values", list(itertools.product((0.0, 0.5, 1.0), repeat=5)))
 def test_every_produced_spec_validates(values):
-    traits = dict(zip(
-        ("openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"),
-        values,
-    ))
-    for seed in (0, 1, 2**31):
+    traits = dict(zip(TRAITS, values))
+    for seed in (0, 1, 2**31, MAX_SEED):
         spec = MAPPER.map(_persona(**traits), seed, "t")
         SceneSpec.model_validate(json.loads(spec.model_dump_json()))
         assert {p.asset for p in spec.props} <= {a for a, _ in BIOMES[spec.biome].props}
@@ -397,3 +592,12 @@ def test_rules_print_as_a_table():
     table = rules_markdown()
     assert "| `spatial.enclosure` | neuroticism | 0.15 | 0.8 |" in table
     assert "agreeableness" not in table  # unmapped, so absent
+
+
+def test_the_0_3_rules_print_too():
+    tables = rules_markdown()
+    assert "| alpine_basin | hollow | overlook | summit |" in tables
+    assert "| summit | terraces | summit | none | alpine_rock | 420 | 0.0026 |" in tables
+    assert "| hollow | bowl | basin_floor | none | moss_rock_mix | 300 | none |" in tables
+    assert "| > 0.65 | ringed | clustered |" in tables
+    assert "| `focal.distance_m` | neuroticism | 40 | 25 |" in tables

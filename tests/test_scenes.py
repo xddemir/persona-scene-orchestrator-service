@@ -338,6 +338,7 @@ def test_stages_are_reported_in_order(out_dir):
         {"persona": {"user": {"alias": "../P01"}}},  # alias that is no safe folder name
         {"persona_file": "x.json", "condition": "A"},  # no conditions any more
         {"persona_file": _persona_file("P01"), "sky_mode": "hdri"},
+        {"persona_file": _persona_file("P01"), "seed": 2**32},  # more than Unity's int32 cast keeps apart
     ],
 )
 def test_requests_without_a_usable_scene_id_are_422(config, body):

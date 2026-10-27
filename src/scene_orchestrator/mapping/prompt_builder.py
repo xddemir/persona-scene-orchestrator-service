@@ -8,7 +8,8 @@ mapping rules.
 
 The image and the procedural sky are two renderings of one description: the
 hour, the cloud cover, the moon, the stars and the rain named here are the
-ones the sky shader draws from the same spec.
+ones the sky shader draws from the same spec. The view named (the archetype)
+is the land Unity builds under it.
 """
 
 from __future__ import annotations
@@ -126,6 +127,29 @@ BIOME_PHRASES: dict[str, str] = {
     "birch_grove": "birch grove",
     "alpine_basin": "alpine basin",
 }
+# Where the biome's own name would paint water the land doesn't have: a lake
+# or the sea where Unity lays a river.
+BIOME_PHRASES_BY_ARCHETYPE: dict[tuple[str, str], str] = {
+    ("lakeside", "forest"): "riverside birch wood",
+    ("coastal_pine", "forest"): "pine forest",
+}
+
+# The view from where the participant sits (archetype), so the painted
+# horizon agrees with the land Unity builds: no sea in a forest panorama.
+ARCHETYPE_PHRASES: dict[str, str] = {
+    "hollow": "seen from a hollow among low hills",
+    "overlook": "seen from a ridge overlooking the land below",
+    "summit": "seen from a high mountain top",
+    "forest": "a river running through the trees",
+    "meadow": "a lake beyond the grass",
+    "beach": "a beach, the open sea ahead",
+}
+# At sunrise and sunset the participant faces the sun, and the sea lies
+# ahead. Under a closed sky no sun is named, so these don't apply there.
+SUN_AHEAD_PHRASES: dict[tuple[str, str], str] = {
+    ("beach", "sunrise"): "a beach, the sea toward the rising sun",
+    ("beach", "sunset"): "a beach, the sea toward the setting sun",
+}
 
 
 class PromptBuilder(Protocol):
@@ -156,9 +180,16 @@ class TemplatePromptBuilder:
             if spec.terrain.water.present
             else ""
         )
+        biome = BIOME_PHRASES_BY_ARCHETYPE.get(
+            (spec.biome, spec.archetype), BIOME_PHRASES[spec.biome]
+        )
+        view = ARCHETYPE_PHRASES[spec.archetype]
+        if not closed:
+            view = SUN_AHEAD_PHRASES.get((spec.archetype, lighting.time_of_day), view)
         slots = [
             TRIGGER,
-            f"{band(ENCLOSURE_BANDS, spec.spatial.enclosure)} {BIOME_PHRASES[spec.biome]} {time}",
+            f"{band(ENCLOSURE_BANDS, spec.spatial.enclosure)} {biome} {time}",
+            view,
             band(CLOUD_BANDS, sky.clouds.coverage),
             band(MOON_BANDS, lighting.moon_phase) if heavens else "",
             band(STAR_BANDS, sky.stars.density * sky.stars.brightness) if heavens else "",

@@ -19,21 +19,30 @@ and strength, fog and rain are stated there once, never repeated in
 The sun may stand below the horizon. The spec says where it is and what is in
 the sky (clouds, stars, the moon's phase, rain); how a sky looks at that hour
 is the renderer's business, the shader's or the image model's.
+
+Unity builds the land from the spec too (0.3). `archetype` picks one of the
+settings in Unity's asset catalogue (`catalogue_version`); the setting gives
+every terrain value the spec leaves out. Unity reads a missing number as 0 and
+a missing string as "", and both mean "the setting's". So the override fields
+below are None by default, and a deliberate 0 can't be expressed.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..outputs import SCENE_ID_PATTERN
 
 Unit = Annotated[float, Field(ge=0.0, le=1.0)]
-Degrees = Annotated[float, Field(ge=0.0, le=360.0)]
+Degrees = Annotated[float, Field(ge=0.0, le=360.0)]  # clockwise from north (+Z)
 Pixels = Annotated[int, Field(gt=0)]
 Rgb = tuple[Unit, Unit, Unit]
 CloudOffset = Annotated[float, Field(ge=0.0, le=100.0)]
+
+# Unity casts the seed to a 32-bit int, so it stays below 2**32.
+MAX_SEED = 2**32 - 1
 
 Biome = Literal[
     "coastal_pine", "open_meadow", "forest_clearing", "snowy_valley",
@@ -42,6 +51,11 @@ Biome = Literal[
 SkyMode = Literal["panorama", "procedural"]
 TimeOfDay = Literal["night", "sunrise", "morning", "midday", "afternoon", "sunset"]
 PrecipitationKind = Literal["rain", "snow"]
+# The settings in Unity's asset catalogue.
+Archetype = Literal["hollow", "overlook", "summit", "forest", "meadow", "beach"]
+MacroShape = Literal["plain", "bowl", "ridge", "peak", "shore", "terraces"]
+Placement = Literal["centre", "basin_floor", "crest", "summit", "shore"]
+WaterKind = Literal["river", "lake", "sea", "none"]
 
 
 class _Strict(BaseModel):
@@ -102,14 +116,54 @@ class ProceduralSky(_Strict):
 
 
 class Water(_Strict):
+    """Unity goes by `kind`; `present` says the same thing, for older readers."""
+
     present: bool
-    motion: Unit
+    motion: Unit  # not read by Unity yet
+    kind: WaterKind
+    # Both None: Unity places the water from the facing (the river and the sea
+    # ahead, the lake to one side). With distance_m, azimuth_deg is absolute.
+    distance_m: float | None = Field(default=None, gt=0.0)
+    azimuth_deg: Degrees | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Water:
+        if self.present != (self.kind != "none"):
+            raise ValueError(f"present must be {self.kind != 'none'} for kind {self.kind!r}")
+        if self.azimuth_deg is not None and self.distance_m is None:
+            raise ValueError("azimuth_deg is only read with distance_m")
+        return self
+
+
+class Spawn(_Strict):
+    """Where the participant sits and which way they look. Unity reads
+    facing_deg only when placement is set, so both are required."""
+
+    placement: Placement
+    facing_deg: Degrees
 
 
 class Terrain(_Strict):
-    profile: Literal["flat", "gentle_slope", "rolling", "basin"]
-    ground_material: str
+    profile: Literal["flat", "gentle_slope", "rolling", "basin"]  # Unity no longer reads it
+    # None: the archetype's ground. A name Unity doesn't know leaves the
+    # terrain bare: no paint, no grass, no rocks.
+    ground_material: str | None = None
+    # Overrides of the archetype's tuned landform. None in normal output; for
+    # experiments only. 0 would mean "the archetype's", so it is not allowed.
+    macro_shape: MacroShape | None = None
+    amplitude_m: float | None = Field(default=None, gt=0.0)  # lowest to highest point
+    feature_scale_m: float | None = Field(default=None, gt=0.0)  # size of the bumps
+    roughness: float | None = Field(default=None, gt=0.0, le=1.0)
     water: Water
+    spawn: Spawn
+
+
+class Anchor(_Strict):
+    """One prop placed on purpose, seen from where the participant sits."""
+
+    asset: str  # a prop name in the asset catalogue
+    distance_m: float = Field(ge=0.0)
+    azimuth_deg: Degrees
 
 
 class Prop(_Strict):
@@ -142,9 +196,12 @@ class Weather(_Strict):
 
 
 class Spatial(_Strict):
-    enclosure: Unit
+    enclosure: Unit  # also how tall the horizon mountains are (the archetype's min -> max)
     sightline_distance_m: float = Field(ge=10.0, le=300.0)
     prospect_refuge_bias: Literal["prospect", "refuge", "balanced"]
+    # How far the horizon mountains stand. None: the archetype's. Unity moves
+    # them out to at least 290 m.
+    silhouette_distance_m: float | None = Field(default=None, gt=0.0)
 
 
 class AudioLayer(_Strict):
@@ -163,15 +220,23 @@ class Activity(_Strict):
 
 
 class SceneSpec(_Strict):
-    spec_version: str = "0.2"
+    spec_version: str = "0.3"
     scene_id: str = Field(pattern=SCENE_ID_PATTERN)  # also the folder under out/
-    seed: int = Field(ge=0)  # drives all procedural placement
+    seed: int = Field(ge=0, le=MAX_SEED)  # drives all procedural placement
+    catalogue_version: str = "v1"  # the Unity asset catalogue the names are from
+    archetype: Archetype  # the Unity setting: landform, water, ground, horizon
     biome: Biome
     sky_mode: SkyMode = "panorama"  # which of the next two Unity renders
     skybox: Skybox
     procedural_sky: ProceduralSky
     terrain: Terrain
     props: list[Prop]
+    # The prop the view is composed around: Unity keeps a 40 degree corridor
+    # to it clear of scattered props.
+    focal: Anchor
+    # A prop close by at the edge of view, so distance reads. Unity keeps it
+    # 3-5 m away.
+    framing: Anchor
     lighting: Lighting
     weather: Weather
     spatial: Spatial

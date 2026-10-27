@@ -37,7 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from .clients.image_gen import SlurmImageGenClient
 from .config import ConfigError, load_config
 from .manifest import read_manifest, update_manifest
-from .models import SkyMode
+from .models import MAX_SEED, SkyMode
 from .outputs import SCENE_ID_PATTERN
 from .pipeline import ScenePipeline
 
@@ -54,7 +54,7 @@ class QueueEntry(BaseModel):
     participant_id: str = Field(pattern=SCENE_ID_PATTERN)  # also the scene_id
     persona_file: Path | None = None
     # Omitted: derived from the participant id, as for POST /scenes.
-    seed: int | None = Field(default=None, ge=0)
+    seed: int | None = Field(default=None, ge=0, le=MAX_SEED)
     # Omitted: the run's --sky-mode.
     sky_mode: SkyMode | None = None
 

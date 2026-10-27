@@ -36,6 +36,7 @@ PERSONA = {
 SPEC = {
     "scene_id": "p07",
     "seed": 1234,
+    "archetype": "forest",
     "biome": "forest_clearing",
     "skybox": {"resolution": [2048, 1024]},
     "procedural_sky": {
@@ -49,15 +50,17 @@ SPEC = {
     },
     "terrain": {
         "profile": "gentle_slope",
-        "ground_material": "moss",
-        "water": {"present": True, "motion": 0.2},
+        "water": {"present": True, "motion": 0.2, "kind": "river"},
+        "spawn": {"placement": "centre", "facing_deg": 185},
     },
     "props": [
-        {"asset": "pine_tall", "count": 120, "distribution": "poisson",
+        {"asset": "pine_large", "count": 120, "distribution": "poisson",
          "min_spacing": 3.0, "exclude_radius": 8.0, "scale_jitter": 0.15},
         {"asset": "boulder", "count": 12, "distribution": "clustered",
          "exclude_radius": 6.0, "cluster_count": 3},
     ],
+    "focal": {"asset": "pine_large", "distance_m": 30, "azimuth_deg": 185},
+    "framing": {"asset": "pine_large", "distance_m": 4, "azimuth_deg": 120},
     "lighting": {"sun_elevation_deg": 12, "sun_azimuth_deg": 95, "time_of_day": "morning",
                  "moon_elevation_deg": 40, "moon_azimuth_deg": 250, "moon_phase": 0.7,
                  "color_temperature_k": 3200, "intensity": 0.6, "fog_density": 0.04},
@@ -113,7 +116,8 @@ def test_an_invalid_persona_is_rejected(field, value):
 
 def test_a_valid_scene_spec_builds():
     spec = SceneSpec.model_validate(SPEC)
-    assert spec.spec_version == "0.2"
+    assert spec.spec_version == "0.3"
+    assert spec.catalogue_version == "v1"
     assert spec.skybox.projection == "equirect"
     assert spec.skybox.resolution == (2048, 1024)
     assert spec.skybox.rotation_deg == 0
@@ -211,6 +215,19 @@ def test_a_procedural_sky_without_clouds_is_rejected():
         ("procedural_sky.clouds.offset", [12.5, 100.5]),
         ("procedural_sky.clouds.offset", [12.5]),
         ("seed", -1),
+        ("seed", 2**32),  # Unity casts it to a 32-bit int
+        ("terrain.spawn.facing_deg", 361),
+        ("terrain.spawn.facing_deg", -1),
+        ("focal.distance_m", -1),
+        ("focal.azimuth_deg", 361),
+        ("framing.azimuth_deg", -1),
+        # 0 would read as "the archetype's" in Unity, so it can't be asked for.
+        ("terrain.amplitude_m", 0),
+        ("terrain.feature_scale_m", -5),
+        ("terrain.roughness", 0),
+        ("terrain.roughness", 1.1),
+        ("terrain.water.distance_m", 0),
+        ("spatial.silhouette_distance_m", 0),
     ],
 )
 def test_out_of_range_values_are_rejected(field, value):
@@ -227,6 +244,64 @@ def test_an_unknown_sky_mode_is_rejected():
 def test_an_unknown_biome_is_rejected():
     with pytest.raises(ValidationError, match="biome"):
         SceneSpec.model_validate(_with(SPEC, "biome", "volcano"))
+
+
+# -- the land and the view (0.3) --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("archetype", "volcano"),
+        ("terrain.spawn.placement", "cave"),
+        ("terrain.macro_shape", "volcano"),
+        ("terrain.water.kind", "pond"),
+    ],
+)
+def test_names_unity_does_not_build_are_rejected(field, value):
+    with pytest.raises(ValidationError, match=field.rsplit(".", 1)[-1]):
+        SceneSpec.model_validate(_with(SPEC, field, value))
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [(None, "archetype"), (None, "focal"), (None, "framing"), ("terrain", "spawn"),
+     ("terrain.spawn", "placement"), ("terrain.water", "kind")],
+)
+def test_a_spec_without_its_land_or_view_is_rejected(section, field):
+    """Unity reads the facing only with a placement, so neither is optional."""
+    spec = copy.deepcopy(SPEC)
+    target = spec
+    for key in section.split(".") if section else ():
+        target = target[key]
+    del target[field]
+    with pytest.raises(ValidationError, match=field):
+        SceneSpec.model_validate(spec)
+
+
+@pytest.mark.parametrize(("present", "kind"), [(True, "none"), (False, "river")])
+def test_water_present_must_agree_with_its_kind(present, kind):
+    spec = _with(_with(SPEC, "terrain.water.present", present), "terrain.water.kind", kind)
+    with pytest.raises(ValidationError, match="present"):
+        SceneSpec.model_validate(spec)
+
+
+def test_a_water_azimuth_needs_its_distance():
+    """Unity reads azimuth_deg only together with distance_m."""
+    with pytest.raises(ValidationError, match="distance_m"):
+        SceneSpec.model_validate(_with(SPEC, "terrain.water.azimuth_deg", 90))
+    placed = _with(_with(SPEC, "terrain.water.azimuth_deg", 90), "terrain.water.distance_m", 20)
+    assert SceneSpec.model_validate(placed).terrain.water.distance_m == 20
+
+
+def test_overrides_default_to_null_so_unity_uses_the_archetype():
+    """Unity reads null as 0 or "", which both mean the archetype's value."""
+    spec = SceneSpec.model_validate(SPEC).model_dump(mode="json")
+    terrain, water = spec["terrain"], spec["terrain"]["water"]
+    for value in (terrain["ground_material"], terrain["macro_shape"], terrain["amplitude_m"],
+                  terrain["feature_scale_m"], terrain["roughness"], water["distance_m"],
+                  water["azimuth_deg"], spec["spatial"]["silhouette_distance_m"]):
+        assert value is None
 
 
 def test_unknown_fields_are_rejected():

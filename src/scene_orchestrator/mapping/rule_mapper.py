@@ -10,8 +10,9 @@ printed in the thesis (`rules_markdown()`). Each rule names the trait it
 derives from. Values interpolate linearly between the trait's two poles:
 `at_0` when the trait is 0.0, `at_1` when it is 1.0.
 
-Asset, ground-material and audio-layer names stand in for the curated Unity
-library and must match its names once that library exists.
+Prop, ground and archetype names are those of Unity's asset catalogue
+(CATALOGUE_V1). Audio-layer names stand in for a sound library that doesn't
+exist yet.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from dataclasses import dataclass
 
 from ..models import (
     Activity,
+    Anchor,
     AudioLayer,
     Lighting,
     Motion,
@@ -33,12 +35,65 @@ from ..models import (
     SkyClouds,
     SkyStars,
     Spatial,
+    Spawn,
     Terrain,
     TimeOfDay,
     Traits,
     Water,
     Weather,
 )
+
+# -- Unity's asset catalogue ------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Setting:
+    """An archetype's defaults in Unity (its SettingProfile). Unity fills in
+    whatever the spec leaves out from these; placement and water are always
+    sent, since Unity reads the facing only with a placement."""
+
+    landform: str
+    placement: str
+    water: str
+    ground: str
+    horizon_m: float  # how far away the horizon mountains stand
+
+
+@dataclass(frozen=True)
+class Catalogue:
+    version: str
+    props: frozenset[str]
+    grounds: frozenset[str]
+    archetypes: dict[str, Setting]
+
+
+# The single source for every catalogue name a spec may carry.
+CATALOGUE_V1 = Catalogue(
+    version="v1",
+    # Only these place anything. pine_large, pine_medium, birch_light, fern and
+    # driftwood have no model yet; Unity lays them out all the same and shows
+    # them once the art is there.
+    props=frozenset({
+        "pine_large", "pine_medium", "birch_light", "rock_cluster", "fern",
+        "grass_tuft", "driftwood", "rock_small", "boulder",
+    }),
+    # Normally not sent: each archetype has its own (below).
+    grounds=frozenset({"moss_rock_mix", "dry_meadow", "sand_grass_mix", "alpine_rock"}),
+    archetypes={
+        "hollow": Setting("bowl", "basin_floor", "none", "moss_rock_mix", 300.0),
+        "overlook": Setting("ridge", "crest", "none", "dry_meadow", 340.0),
+        # 3 steps, 30 m high, a path winding up
+        "summit": Setting("terraces", "summit", "none", "alpine_rock", 420.0),
+        "forest": Setting("plain", "centre", "river", "moss_rock_mix", 300.0),
+        "meadow": Setting("plain", "centre", "lake", "dry_meadow", 330.0),
+        "beach": Setting("shore", "shore", "sea", "sand_grass_mix", 300.0),
+    },
+)
+
+# In the catalogue, but never in `props`: Unity places these itself, on the
+# horizon and along the summit's terraces. The ground adds grass, small
+# rocks, boulders, and reeds at the water, on its own too.
+RESERVED_PROPS = frozenset({"mountain", "cliff"})
 
 # -- trait -> parameter: linear rules ---------------------------------------
 
@@ -77,6 +132,8 @@ LINEAR_RULES: tuple[LinearRule, ...] = (
                "softer, more diffuse clouds"),
     LinearRule("procedural_sky.stars.brightness", "neuroticism", 1.0, 0.35,
                "haze and moonlight leave fewer stars to see"),
+    LinearRule("focal.distance_m", "neuroticism", 40, 25,
+               "the view's focal point nearer, the space held closer"),
     # extraversion -> brightness and liveliness
     LinearRule("lighting.sun_elevation_deg", "extraversion", -30, 60,
                "from a starlit night, past dawn or dusk, to high noon"),
@@ -130,6 +187,10 @@ MORNING_ABOVE = 0.5
 # conscientiousness -> order in prop placement.
 RINGED_ABOVE = 0.65  # neat, regular arrangement
 CLUSTERED_ABOVE = 0.35  # grouped; below this, "scattered"
+# Unity builds only "poisson" and "clustered" so far, and treats the other two
+# as poisson, with a warning. Until it builds them, each is sent as the
+# nearest it has: ringed (orderly) as clustered, scattered (loose) as poisson.
+DISTRIBUTION_STAND_IN = {"ringed": "clustered", "scattered": "poisson"}
 
 # openness -> number of prop types: 2 + round(3 * openness), so 2..5.
 PROP_TYPES_MIN, PROP_TYPES_SPAN = 2, 3
@@ -145,6 +206,69 @@ BIOME_TIERS: tuple[tuple[float, tuple[str, ...]], ...] = (
 # agreeableness: UNMAPPED. No parameter depends on it yet. Which (if any)
 # environmental quality agreeableness should drive is an open question in the
 # thesis, so it is left out on purpose rather than mapped arbitrarily.
+
+# -- the land: archetype, from biome and prospect/refuge ---------------------
+
+# biome (openness) x prospect_refuge_bias (neuroticism) -> the Unity setting.
+# The biome keeps the sky; neuroticism picks the land within it: a hollow to
+# shelter in, a view to look out over, or between the two. No seed draw, so
+# the sky (biome) and the land (archetype) can't disagree.
+ARCHETYPE_BY_BIOME: dict[str, dict[str, str]] = {
+    "open_meadow": {"refuge": "hollow", "balanced": "meadow", "prospect": "overlook"},
+    "forest_clearing": {"refuge": "hollow", "balanced": "forest", "prospect": "overlook"},
+    "birch_grove": {"refuge": "hollow", "balanced": "forest", "prospect": "overlook"},
+    "lakeside": {"refuge": "forest", "balanced": "meadow", "prospect": "meadow"},
+    "coastal_pine": {"refuge": "forest", "balanced": "beach", "prospect": "beach"},
+    "rocky_shore": {"refuge": "beach", "balanced": "beach", "prospect": "beach"},
+    "alpine_basin": {"refuge": "hollow", "balanced": "overlook", "prospect": "summit"},
+    "snowy_valley": {"refuge": "hollow", "balanced": "hollow", "prospect": "summit"},
+}
+
+# Where the participant sits and what water there is: the archetype's
+# (CATALOGUE_V1), always sent. The water's sound follows its kind: no lake
+# lapping without a lake, waves only at the sea. It comes before the biome's
+# own ambience.
+WATER_SOUND: dict[str, tuple[str, float]] = {
+    "river": ("stream", 0.25),
+    "lake": ("lake_lapping", 0.35),
+    "sea": ("waves_gentle", 0.40),
+}
+SEA_SOUND_BY_BIOME: dict[str, tuple[str, float]] = {
+    "rocky_shore": ("waves_rocky", 0.45),  # the sea breaks on rock
+}
+
+# Unity's fog is exponential squared: exp(-(density * d)**2) of a thing d away
+# still shows. Capping density at FOG_HORIZON_DEPTH / horizon leaves
+# exp(-1.21), about 30%, of the horizon mountains, so a view keeps its depth.
+# A hollow is not capped: there the fog is the shelter.
+FOG_HORIZON_DEPTH = 1.1
+FOG_UNCAPPED = frozenset({"hollow"})
+FOG_CAP: dict[str, float] = {
+    name: round(FOG_HORIZON_DEPTH / setting.horizon_m, 4)
+    for name, setting in CATALOGUE_V1.archetypes.items()
+    if name not in FOG_UNCAPPED
+}
+
+# -- the view: facing, focal and framing ------------------------------------
+
+# Which way the participant faces, from the light. A low sun (sunrise or
+# sunset) is faced: its glow is ahead, and so is the sea or river, which Unity
+# lays out in front. At night the moon is faced. By day the sun stands to one
+# side, so relief reads and nothing glares: this many degrees from it, to the
+# left or right (side and angle from the seed).
+LOW_SUN_TIMES = frozenset({"sunrise", "sunset"})
+DAY_SUN_OFFSET_DEG = (60.0, 120.0)
+
+# The focal prop stands where the participant faces, as far as its linear
+# rule says. In a forest or a hollow it is the biome's tree; elsewhere, and
+# where the biome has none, a rock cluster.
+FOCAL_TREE_ARCHETYPES = frozenset({"forest", "hollow"})
+FOCAL_ROCK = "rock_cluster"
+# The framing prop: the biome's tree (a rock cluster where it has none),
+# close by at the edge of view, this far to the left or right of the facing
+# (side and angle from the seed). Unity keeps it within 3-5 m.
+FRAMING_DISTANCE_M = 4.0
+FRAMING_OFFSET_DEG = (55.0, 80.0)
 
 # -- derived from spatial.enclosure (itself from neuroticism) ---------------
 
@@ -188,63 +312,83 @@ SNOW_BIOMES = frozenset({"snowy_valley"})  # where what falls is snow, not rain
 
 @dataclass(frozen=True)
 class BiomeKit:
-    terrain: str
-    ground_material: str
-    water: bool
-    # (asset, weight): weight scales the count. The first is the biome's
-    # signature asset and is always placed. At least 5, for openness = 1.
+    terrain: str  # terrain.profile; Unity no longer reads it
+    tree: str | None  # the biome's tree, for the focal and framing props; None: it has none
+    # (catalogue prop, weight): weight scales the count. The first is the
+    # biome's signature prop and is always placed. Exactly 5, all different:
+    # openness = 1 places them all, and five entries keep the seed's draws
+    # (rng.sample) the same as before the kits were re-mapped to the catalogue.
     props: tuple[tuple[str, float], ...]
-    ambience: tuple[tuple[str, float], ...]  # (layer, gain), fixed
+    ambience: tuple[tuple[str, float], ...]  # (layer, gain), fixed; the water's sound is added by its kind
     birds: str  # gain and rate come from extraversion
 
 
+# Each entry keeps its place in the kit, so the seed picks the same entries
+# as before. Comments name the old asset where an entry stands in for one the
+# catalogue doesn't have.
 BIOMES: dict[str, BiomeKit] = {
     "open_meadow": BiomeKit(
-        "gentle_slope", "meadow_grass", False,
-        (("tall_grass_clump", 1.0), ("wildflower_patch", 0.8), ("oak_solitary", 0.1),
-         ("fence_post", 0.15), ("hay_bale", 0.05)),
+        "gentle_slope", "birch_light",
+        (("grass_tuft", 1.0),
+         ("rock_cluster", 0.05),  # for wildflower_patch
+         ("birch_light", 0.1),  # for oak_solitary
+         ("pine_medium", 0.05),  # for fence_post
+         ("driftwood", 0.05)),  # for hay_bale
         (("wind_grass", 0.3), ("insects", 0.15)), "birdsong_meadow",
     ),
     "forest_clearing": BiomeKit(
-        "flat", "forest_floor_moss", False,
-        (("pine_tall", 1.0), ("fern", 0.8), ("mushroom_cluster", 0.3),
-         ("mossy_log", 0.2), ("boulder", 0.15)),
+        "flat", "pine_large",
+        (("pine_large", 1.0), ("fern", 0.8),
+         ("pine_medium", 0.3),  # for mushroom_cluster
+         ("driftwood", 0.2),  # mossy_log
+         ("boulder", 0.15)),
         (("wind_canopy", 0.25), ("leaves_rustle", 0.2)), "birdsong_forest",
     ),
     "lakeside": BiomeKit(
-        "gentle_slope", "lake_shore_pebbles", True,
-        (("reed_bed", 1.0), ("birch_tall", 0.4), ("willow", 0.3),
-         ("smooth_stone", 0.3), ("wooden_jetty", 0.02)),
-        (("lake_lapping", 0.35), ("wind_reeds", 0.2)), "birdsong_wetland",
+        "gentle_slope", "birch_light",
+        (("grass_tuft", 1.0),  # for reed_bed: the ground grows the reeds at the water
+         ("birch_light", 0.4),
+         ("fern", 0.3),  # for willow
+         ("rock_cluster", 0.3),  # smooth_stone
+         ("driftwood", 0.05)),  # for wooden_jetty
+        (("wind_reeds", 0.2),), "birdsong_wetland",
     ),
     "birch_grove": BiomeKit(
-        "rolling", "birch_leaf_litter", False,
-        (("birch_tall", 1.0), ("fern", 0.6), ("birch_sapling", 0.5),
-         ("wildflower_patch", 0.4), ("mossy_log", 0.2)),
+        "rolling", "birch_light",
+        (("birch_light", 1.0), ("fern", 0.6),
+         ("pine_medium", 0.2),  # for birch_sapling
+         ("grass_tuft", 0.4),  # wildflower_patch
+         ("driftwood", 0.2)),  # mossy_log
         (("wind_canopy", 0.25), ("leaves_rustle", 0.2)), "birdsong_forest",
     ),
     "coastal_pine": BiomeKit(
-        "rolling", "sandy_needles", True,
-        (("pine_coastal", 1.0), ("dune_grass", 0.8), ("beach_shrub", 0.4),
+        "rolling", "pine_large",
+        (("pine_large", 1.0), ("grass_tuft", 0.8),
+         ("pine_medium", 0.4),  # for beach_shrub
          ("driftwood", 0.2), ("boulder", 0.15)),
-        (("waves_gentle", 0.4), ("wind_pines", 0.2)), "seabirds",
+        (("wind_pines", 0.2),), "seabirds",
     ),
     "alpine_basin": BiomeKit(
-        "basin", "alpine_turf", True,
-        (("spruce_alpine", 1.0), ("alpine_flowers", 0.8), ("dwarf_pine", 0.5),
-         ("boulder", 0.4), ("scree_patch", 0.3)),
-        (("wind_high", 0.3), ("stream", 0.25)), "birdsong_alpine",
+        "basin", "pine_large",
+        (("pine_large", 1.0), ("grass_tuft", 0.8), ("pine_medium", 0.5),
+         ("boulder", 0.4), ("rock_cluster", 0.3)),
+        (("wind_high", 0.3),), "birdsong_alpine",
     ),
     "rocky_shore": BiomeKit(
-        "rolling", "wet_rock", True,
-        (("sea_rock", 1.0), ("coastal_grass", 0.6), ("tide_pool", 0.3),
-         ("kelp_pile", 0.2), ("driftwood", 0.2)),
-        (("waves_rocky", 0.45), ("wind_coast", 0.25)), "seabirds",
+        "rolling", None,
+        (("rock_cluster", 1.0), ("grass_tuft", 0.6),
+         ("boulder", 0.3),  # for tide_pool
+         ("rock_small", 0.2),  # for kelp_pile
+         ("driftwood", 0.2)),
+        (("wind_coast", 0.25),), "seabirds",
     ),
     "snowy_valley": BiomeKit(
-        "basin", "snow", False,
-        (("spruce_snowy", 1.0), ("snow_drift", 0.6), ("frozen_shrub", 0.4),
-         ("boulder_snowy", 0.3), ("deadwood", 0.15)),
+        "basin", "pine_large",
+        (("pine_large", 1.0),
+         ("pine_medium", 0.4),  # for snow_drift
+         ("rock_cluster", 0.2),  # for frozen_shrub
+         ("boulder", 0.3),
+         ("driftwood", 0.15)),  # deadwood
         (("wind_snow", 0.3), ("snow_settle", 0.1)), "birdsong_winter",
     ),
 }
@@ -315,11 +459,24 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
     )
     moon_spread = rng.uniform(-MOON_AZIMUTH_SPREAD_DEG, MOON_AZIMUTH_SPREAD_DEG)
     moon_elevation = _r(rng.uniform(*MOON_ELEVATION_DEG))
+    # Added in 0.3, after all of the above, so those keep their values. Each
+    # is drawn whether or not it is used.
+    sun_side = _side(rng)
+    sun_offset = rng.uniform(*DAY_SUN_OFFSET_DEG)
+    framing_side = _side(rng)
+    framing_offset = rng.uniform(*FRAMING_OFFSET_DEG)
 
     sun_elevation = _linear("lighting.sun_elevation_deg", traits)
     time_of_day = _time_of_day(sun_elevation, traits.conscientiousness)
     moon_phase = _linear("lighting.moon_phase", traits)
+    moon_azimuth = _r((sun_azimuth + 180.0 * moon_phase + moon_spread) % 360.0)
     night = time_of_day == "night"
+
+    bias = _prospect_refuge(traits.neuroticism)
+    archetype = ARCHETYPE_BY_BIOME[biome][bias]
+    setting = CATALOGUE_V1.archetypes[archetype]
+    facing = _facing(time_of_day, sun_azimuth, moon_azimuth, sun_side * sun_offset)
+    water = setting.water
 
     enclosure = _linear("spatial.enclosure", traits)
     distribution = _distribution(traits.conscientiousness)
@@ -339,36 +496,55 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
             ),
         ))
 
-    audio = [AudioLayer(layer=layer, gain=gain) for layer, gain in kit.ambience]
+    sound = _water_sound(biome, water)
+    audio = [AudioLayer(layer=layer, gain=gain) for layer, gain in (*sound, *kit.ambience)]
     audio.append(AudioLayer(
         layer=kit.birds,
         gain=_linear("audio.birds.gain", traits),
         event_rate_per_min=_linear("audio.birds.event_rate_per_min", traits),
     ))
 
+    fog_density = _linear("lighting.fog_density", traits)
+    if archetype in FOG_CAP:
+        fog_density = min(fog_density, FOG_CAP[archetype])
+
     return SceneSpec(
         scene_id=scene_id,
         seed=seed,
+        catalogue_version=CATALOGUE_V1.version,
+        archetype=archetype,
         biome=biome,
         skybox=Skybox(resolution=SKYBOX_RESOLUTION),
         # Filled in whatever the sky mode: it costs nothing, and it is what
         # Unity renders when there is no panorama.
         procedural_sky=_procedural_sky(biome, traits, cloud_offset),
+        # The landform, ground and horizon are left to the archetype.
         terrain=Terrain(
             profile=kit.terrain,
-            ground_material=kit.ground_material,
             water=Water(
-                present=kit.water,
-                motion=_linear("terrain.water.motion", traits) if kit.water else 0.0,
+                present=water != "none",
+                motion=_linear("terrain.water.motion", traits) if water != "none" else 0.0,
+                kind=water,
             ),
+            spawn=Spawn(placement=setting.placement, facing_deg=facing),
         ),
         props=props,
+        focal=Anchor(
+            asset=_focal_asset(kit, archetype),
+            distance_m=_linear("focal.distance_m", traits),
+            azimuth_deg=facing,
+        ),
+        framing=Anchor(
+            asset=kit.tree or FOCAL_ROCK,
+            distance_m=FRAMING_DISTANCE_M,
+            azimuth_deg=_r((facing + framing_side * framing_offset) % 360.0),
+        ),
         lighting=Lighting(
             sun_elevation_deg=sun_elevation,
             sun_azimuth_deg=sun_azimuth,
             time_of_day=time_of_day,
             moon_elevation_deg=moon_elevation,
-            moon_azimuth_deg=_r((sun_azimuth + 180.0 * moon_phase + moon_spread) % 360.0),
+            moon_azimuth_deg=moon_azimuth,
             moon_phase=moon_phase,
             color_temperature_k=_r(
                 MOON_COLOR_TEMPERATURE_K
@@ -380,7 +556,7 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
                 if night
                 else _interpolate(SUN_INTENSITY, sun_elevation)
             ),
-            fog_density=_linear("lighting.fog_density", traits),
+            fog_density=fog_density,
         ),
         weather=Weather(
             precipitation=_precipitation(traits.neuroticism),
@@ -389,7 +565,7 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
         spatial=Spatial(
             enclosure=enclosure,
             sightline_distance_m=_linear("spatial.sightline_distance_m", traits),
-            prospect_refuge_bias=_prospect_refuge(traits.neuroticism),
+            prospect_refuge_bias=bias,
         ),
         audio=audio,
         motion=Motion(
@@ -438,11 +614,46 @@ def _time_of_day(sun_elevation_deg: float, conscientiousness: float) -> TimeOfDa
 
 
 def _distribution(conscientiousness: float) -> str:
+    """The rule's distribution, as sent: see DISTRIBUTION_STAND_IN."""
+    intended = _intended_distribution(conscientiousness)
+    return DISTRIBUTION_STAND_IN.get(intended, intended)
+
+
+def _intended_distribution(conscientiousness: float) -> str:
     if conscientiousness > RINGED_ABOVE:
         return "ringed"
     if conscientiousness > CLUSTERED_ABOVE:
         return "clustered"
     return "scattered"
+
+
+def _side(rng: random.Random) -> float:
+    """-1 (left, anticlockwise) or +1 (right, clockwise), from the seed."""
+    return 1.0 if rng.random() < 0.5 else -1.0
+
+
+def _facing(
+    time_of_day: str, sun_azimuth: float, moon_azimuth: float, day_offset: float
+) -> float:
+    if time_of_day == "night":
+        return moon_azimuth
+    if time_of_day in LOW_SUN_TIMES:
+        return sun_azimuth
+    return _r((sun_azimuth + day_offset) % 360.0)
+
+
+def _focal_asset(kit: BiomeKit, archetype: str) -> str:
+    if archetype in FOCAL_TREE_ARCHETYPES and kit.tree:
+        return kit.tree
+    return FOCAL_ROCK
+
+
+def _water_sound(biome: str, kind: str) -> tuple[tuple[str, float], ...]:
+    if kind == "none":
+        return ()
+    if kind == "sea" and biome in SEA_SOUND_BY_BIOME:
+        return (SEA_SOUND_BY_BIOME[biome],)
+    return (WATER_SOUND[kind],)
 
 
 def _procedural_sky(
@@ -533,14 +744,93 @@ def _r(x: float) -> float:
 
 
 def rules_markdown() -> str:
-    """The linear rules as a Markdown table, ready to paste into the thesis."""
-    lines = [
-        "| Parameter | Trait | at 0.0 | at 1.0 | Rationale |",
-        "| --- | --- | --- | --- | --- |",
-    ]
-    for rule in LINEAR_RULES:
-        lines.append(
-            f"| `{rule.parameter}` | {rule.trait} | {rule.at_0:g} | {rule.at_1:g} "
-            f"| {rule.rationale} |"
-        )
+    """The rules as Markdown tables, ready to paste into the thesis."""
+    sections = (
+        ("Linear rules", _linear_table()),
+        ("Archetype: biome (openness) × prospect/refuge (neuroticism)", _archetype_table()),
+        (f"Per archetype (Unity catalogue {CATALOGUE_V1.version})", _setting_table()),
+        ("Facing, focal and framing", _view_table()),
+        ("Prop distribution (conscientiousness)", _distribution_table()),
+        ("Biome kits", _kit_table()),
+    )
+    return "\n\n".join(f"### {title}\n\n{table}" for title, table in sections)
+
+
+def _table(header: tuple[str, ...], rows) -> str:
+    lines = ["| " + " | ".join(header) + " |", "|" + " --- |" * len(header)]
+    lines += ["| " + " | ".join(row) + " |" for row in rows]
     return "\n".join(lines)
+
+
+def _linear_table() -> str:
+    return _table(
+        ("Parameter", "Trait", "at 0.0", "at 1.0", "Rationale"),
+        ((f"`{r.parameter}`", r.trait, f"{r.at_0:g}", f"{r.at_1:g}", r.rationale)
+         for r in LINEAR_RULES),
+    )
+
+
+def _archetype_table() -> str:
+    biases = ("refuge", "balanced", "prospect")
+    return _table(
+        ("Biome", *biases),
+        ((biome, *(row[b] for b in biases)) for biome, row in ARCHETYPE_BY_BIOME.items()),
+    )
+
+
+def _setting_table() -> str:
+    def sound(name: str, kind: str) -> str:
+        if kind == "none":
+            return "none"
+        layers = {_water_sound(b, kind)[0][0] for b, row in ARCHETYPE_BY_BIOME.items()
+                  if name in row.values()}
+        return f"{kind} ({', '.join(sorted(layers))})"
+
+    return _table(
+        ("Archetype", "Landform", "Placement", "Water (sound)", "Ground", "Horizon (m)",
+         "Fog cap"),
+        ((name, s.landform, s.placement, sound(name, s.water), s.ground, f"{s.horizon_m:g}",
+          f"{FOG_CAP[name]:g}" if name in FOG_CAP else "none")
+         for name, s in CATALOGUE_V1.archetypes.items()),
+    )
+
+
+def _view_table() -> str:
+    day = "–".join(f"{d:g}" for d in DAY_SUN_OFFSET_DEG)
+    side = "–".join(f"{d:g}" for d in FRAMING_OFFSET_DEG)
+    focal = _RULES["focal.distance_m"]
+    return _table(
+        ("Field", "Rule"),
+        (
+            ("`terrain.spawn.facing_deg`", "sunrise, sunset: the sun's azimuth"),
+            ("", "night: the moon's azimuth"),
+            ("", f"day: the sun's azimuth ± {day}° (side and angle from the seed)"),
+            ("`focal.azimuth_deg`", "the facing"),
+            ("`focal.distance_m`", f"{focal.at_0:g} m → {focal.at_1:g} m by {focal.trait}"),
+            ("`focal.asset`", f"the biome's tree in {' and '.join(sorted(FOCAL_TREE_ARCHETYPES))}; "
+                              f"else {FOCAL_ROCK}"),
+            ("`framing.asset`", f"the biome's tree; {FOCAL_ROCK} where it has none"),
+            ("`framing.distance_m`", f"{FRAMING_DISTANCE_M:g} m"),
+            ("`framing.azimuth_deg`", f"the facing ± {side}° (side and angle from the seed)"),
+        ),
+    )
+
+
+def _distribution_table() -> str:
+    rows = (
+        (f"> {RINGED_ABOVE:g}", "ringed"),
+        (f"> {CLUSTERED_ABOVE:g}", "clustered"),
+        (f"≤ {CLUSTERED_ABOVE:g}", "scattered"),
+    )
+    return _table(
+        ("Conscientiousness", "Rule", "Sent until Unity builds it"),
+        ((when, rule, DISTRIBUTION_STAND_IN.get(rule, rule)) for when, rule in rows),
+    )
+
+
+def _kit_table() -> str:
+    return _table(
+        ("Biome", "Tree", "Props (weight; the first always placed)"),
+        ((biome, kit.tree or "none", ", ".join(f"{a} {w:g}" for a, w in kit.props))
+         for biome, kit in BIOMES.items()),
+    )

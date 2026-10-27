@@ -206,6 +206,49 @@ and draws the moon, the stars and what falls from `lighting` and `weather`. The 
 twinkle with it. Agreeableness drives nothing, as elsewhere. The exact numbers are the `procedural_sky.*`
 entries of `LINEAR_RULES` in [`rule_mapper.py`](src/scene_orchestrator/mapping/rule_mapper.py).
 
+### The land and the view (spec 0.3)
+
+Unity builds the place itself: the terrain, water, horizon mountains, ground, props, and where the
+participant sits. It has six tuned settings, the **archetypes**. A spec picks one, and the archetype
+fills in every terrain value the spec leaves out.
+
+| Field | What the mapper sends |
+| --- | --- |
+| `archetype` | From the biome and `prospect_refuge_bias` (see below). No seed draw |
+| `catalogue_version` | `"v1"`: the names below are from Unity's asset catalogue v1 |
+| `terrain.spawn.placement` | The archetype's: `basin_floor`, `crest`, `summit`, `centre` or `shore` |
+| `terrain.spawn.facing_deg` | A low sun is faced; at night, the moon; by day the sun stands 60–120° to one side |
+| `terrain.water.kind` | The archetype's: `river` (forest), `lake` (meadow), `sea` (beach), else `none`. `present` agrees with it |
+| `focal` | The prop the view is composed around, straight ahead: 40 m away when calm, 25 m when anxious |
+| `framing` | The biome's tree (or a rock cluster) 4 m away, 55–80° to one side, at the edge of view |
+| `terrain.ground_material`, `macro_shape`, `amplitude_m`, `feature_scale_m`, `roughness`, `water.distance_m`, `water.azimuth_deg`, `spatial.silhouette_distance_m` | `null`: the archetype's. Set them only for experiments |
+
+| Biome | refuge | balanced | prospect |
+| --- | --- | --- | --- |
+| open_meadow | hollow | meadow | overlook |
+| forest_clearing, birch_grove | hollow | forest | overlook |
+| lakeside | forest | meadow | meadow |
+| coastal_pine | forest | beach | beach |
+| rocky_shore | beach | beach | beach |
+| alpine_basin | hollow | overlook | summit |
+| snowy_valley | hollow | hollow | summit |
+
+- Unity reads a missing or `null` number as 0 and a missing string as `""`, and both mean "the
+  archetype's". So 0 can't be asked for, and the override fields reject it.
+- The fog is capped outside a hollow, so about a third of the horizon mountains still shows
+  (`FOG_CAP`, from each archetype's horizon distance). In a hollow the fog still follows neuroticism.
+- The water's sound follows its kind: a stream with a river, lapping with a lake, waves at the sea.
+- The skybox prompt names the view (e.g. "seen from a high mountain top", "a beach, the sea toward
+  the setting sun"), so the painted horizon agrees with the land.
+- Props, the focal and the framing use only catalogue names (`CATALOGUE_V1`). `mountain` and
+  `cliff` are never sent: Unity places them itself.
+- Unity builds only the `poisson` and `clustered` distributions so far. Until it builds the others,
+  `scattered` is sent as `poisson` and `ringed` as `clustered`.
+- The new seed draws come after all the earlier ones, so a participant's sun, wind, clouds and moon
+  are the same as in 0.2.
+
+`rules_markdown()` prints all of these rules as tables for the thesis.
+
 ## Many participants at once
 
 The batch runner puts a queue of participants through the same pipeline, one after another:
@@ -352,20 +395,20 @@ yourself.
 
 The fixtures between them show every kind of sky:
 
-| Participant | Sky | Biome |
-| --- | --- | --- |
-| P01 | Mostly cloudy dawn, the sun just under the horizon | snowy valley |
-| P02 | Sunny midday, a few clouds | birch grove |
-| P04 | Moonless night crowded with stars, the Milky Way | alpine basin |
-| P05 | Cloudless midday | wildflower meadow |
-| P06 | Rain at night, a full moon behind the cloud | coastal pines |
-| P07 | Snowfall at midday | snowy valley |
-| P08 | Sunrise, scattered clouds | lakeside |
-| P09 | Dusk after sunset, a thin crescent and the first stars | alpine basin |
-| P10 | Night, a half moon, scattered clouds, a few stars | wildflower meadow |
-| P11 | Clear sunset | coastal pines |
-| P12 | Rainy morning | forest clearing |
-| P13 | Mostly cloudy afternoon | rocky shore |
+| Participant | Sky | Biome | Archetype |
+| --- | --- | --- | --- |
+| P01 | Mostly cloudy dawn, the sun just under the horizon | snowy valley | hollow |
+| P02 | Sunny midday, a few clouds | birch grove | overlook |
+| P04 | Moonless night crowded with stars, the Milky Way | alpine basin | summit |
+| P05 | Cloudless midday | wildflower meadow | overlook |
+| P06 | Rain at night, a full moon behind the cloud | coastal pines | forest (river) |
+| P07 | Snowfall at midday | snowy valley | hollow |
+| P08 | Sunrise, scattered clouds | lakeside | meadow (lake) |
+| P09 | Dusk after sunset, a thin crescent and the first stars | alpine basin | summit |
+| P10 | Night, a half moon, scattered clouds, a few stars | wildflower meadow | meadow (lake) |
+| P11 | Clear sunset | coastal pines | beach, facing the sunset |
+| P12 | Rainy morning | forest clearing | hollow |
+| P13 | Mostly cloudy afternoon | rocky shore | beach |
 
 P03 is missing a dimension on purpose: its scene fails, with the reason.
 
