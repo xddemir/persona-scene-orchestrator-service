@@ -16,7 +16,7 @@ from scene_orchestrator.mapping import RuleSpecMapper, SpecMapper, rules_markdow
 from scene_orchestrator.mapping.rule_mapper import (
     BIOME_GROUND_COLOR,
     BIOME_SKY_HUE,
-    BIOMES,
+    BIOME_SOUNDS,
     CATALOGUE_V1,
     DAY_SUN_OFFSET_DEG,
     FOG_CAP,
@@ -33,6 +33,7 @@ from scene_orchestrator.mapping.rule_mapper import (
     SKY_TINT_VALUE,
     SUNRISE_GLOW,
     SUNSET_GLOW,
+    _order,
     _procedural_sky,
 )
 from scene_orchestrator.models import MAX_SEED, PersonaProfile, SceneSpec, TimeOfDay, Traits
@@ -58,6 +59,17 @@ def _persona(**traits) -> PersonaProfile:
 
 def _place(persona: PersonaProfile) -> str:
     return MAPPER.place_for(persona).id
+
+
+def _place_of(spec: SceneSpec):
+    """The place a spec was built at: its setting, biome and axes are one place's."""
+    terrain = spec.terrain
+    key = (spec.archetype, spec.biome, terrain.landform, terrain.position, terrain.water.kind,
+           terrain.water_relation, terrain.vegetation, terrain.season)
+    (place,) = [p for p in PLACES.places
+                if (p.setting, p.biome, p.landform, p.position, p.water, p.water_relation,
+                    p.vegetation, p.season) == key]
+    return place
 
 
 # -- determinism ------------------------------------------------------------
@@ -195,15 +207,23 @@ def test_distribution_follows_conscientiousness(conscientiousness, distribution)
     assert {p.distribution for p in spec.props} == {distribution}
 
 
-@pytest.mark.parametrize("conscientiousness", [0.0, 0.2, 0.35, 0.5, 0.65, 0.66, 0.8, 1.0])
-def test_order_is_sent_only_with_ringed(conscientiousness):
+@pytest.mark.parametrize(
+    ("conscientiousness", "order"),
+    [(0.0, None), (0.2, None), (0.35, None), (0.5, None), (0.65, None),
+     (0.66, 0.029), (0.8, 0.429), (0.825, 0.5), (1.0, 1.0)],
+)
+def test_order_is_sent_only_with_ringed(conscientiousness, order):
+    """Stretched over the ringed band: (C - 0.65) / 0.35, the whole 0..1 Unity reads."""
     spec = MAPPER.map(_persona(conscientiousness=conscientiousness), 1, "t")
-    for prop in spec.props:
-        if prop.distribution == "ringed":
-            assert prop.order == conscientiousness  # its linear rule: 0 -> 0, 1 -> 1
-        else:
-            assert prop.order is None
-    assert any(p.order is not None for p in spec.props) == (conscientiousness > 0.65)
+    assert {p.order for p in spec.props} == {order}
+    assert {p.distribution == "ringed" for p in spec.props} == {order is not None}
+
+
+def test_order_covers_the_whole_range_inside_the_ringed_band():
+    assert _order(0.65) == 0.0
+    assert _order(1.0) == 1.0
+    orders = [_order(c / 100) for c in range(66, 101)]
+    assert orders == sorted(orders)  # more orderly, more exact rings
 
 
 def test_order_is_never_sent_without_rings():
@@ -332,7 +352,7 @@ def test_the_biome_sets_the_hue_and_neuroticism_the_saturation():
     # Within one biome: neuroticism also picks the place, and so the biome.
     for neuroticism, scale in ((0.0, 1.0), (1.0, 0.45)):
         traits = _persona(neuroticism=neuroticism).traits
-        for biome in BIOMES:
+        for biome in BIOME_SOUNDS:
             sky = _procedural_sky(biome, traits, (0.0, 0.0))
             hue, saturation, value = colorsys.rgb_to_hsv(*sky.sky_tint)
             assert hue * 360 == pytest.approx(BIOME_SKY_HUE[biome], abs=1.0)
@@ -377,14 +397,14 @@ def test_every_trait_but_agreeableness_shapes_the_sky():
 
 
 def test_every_biome_has_a_sky_hue_and_a_ground_color():
-    assert set(BIOME_SKY_HUE) == set(BIOME_GROUND_COLOR) == set(BIOMES) == set(get_args(Biome))
+    assert set(BIOME_SKY_HUE) == set(BIOME_GROUND_COLOR) == set(BIOME_SOUNDS) == set(get_args(Biome))
 
 
 def test_more_enclosure_means_more_props_closer_in():
     open_ = MAPPER.map(_persona(neuroticism=0.0), 3, "t")
     closed = MAPPER.map(_persona(neuroticism=1.0), 3, "t")
-    # Both kits' signature props weigh 1, so the count is enclosure's alone.
-    assert BIOMES[open_.biome].props[0][1] == BIOMES[closed.biome].props[0][1] == 1.0
+    # Both places' first props weigh 1, so the count is enclosure's alone.
+    assert _place_of(open_).props[0][1] == _place_of(closed).props[0][1] == 1.0
     assert closed.props[0].count > open_.props[0].count
     assert closed.props[0].exclude_radius < open_.props[0].exclude_radius
 
@@ -481,12 +501,12 @@ def test_the_seed_never_decides_what_the_persona_should(alias):
     assert len({s.framing.azimuth_deg for s in specs}) > 1
 
 
-def test_prop_kinds_are_the_front_of_the_kit():
+def test_prop_kinds_are_the_front_of_the_places_list():
     for openness, n in ((0.0, 2), (0.16, 2), (0.17, 3), (0.5, 4), (0.83, 4), (0.84, 5), (1.0, 5)):
         persona = _persona(openness=openness)
         spec = MAPPER.map(persona, 1, "t")
-        kit = BIOMES[spec.biome]
-        assert [p.asset for p in spec.props] == [a for a, _ in kit.props[:n]]
+        place = MAPPER.place_for(persona)
+        assert [p.asset for p in spec.props] == [a for a, _ in place.props[:n]]
 
 
 @pytest.mark.parametrize(
@@ -532,13 +552,12 @@ def test_mountains_and_cliffs_are_left_to_unity():
         assert not assets & RESERVED_PROPS
 
 
-def test_every_kit_is_five_different_catalogue_props():
-    """The variety rule asks for up to five kinds: a signature and four others."""
-    for kit in BIOMES.values():
-        assets = [asset for asset, _ in kit.props]
-        assert len(assets) == len(set(assets)) == 5
-        assert set(assets) <= CATALOGUE_V1.props
-        assert kit.tree is None or kit.tree in CATALOGUE_V1.props
+def test_the_props_sent_are_the_places_own():
+    for spec in ALL_SPECS:
+        place = _place_of(spec)
+        assert [(p.asset, p.count > 0) for p in spec.props] == [
+            (a, True) for a, _ in place.props[:len(spec.props)]
+        ]
 
 
 def test_the_water_is_heard_only_where_it_is():
@@ -595,13 +614,10 @@ def test_the_focal_stands_where_the_participant_faces():
     assert (calm.distance_m, anxious.distance_m) == (40, 25)
 
 
-def test_the_focal_is_the_biomes_tree_in_a_forest_or_hollow():
+def test_the_focal_and_framing_are_the_places():
     for spec in ALL_SPECS:
-        tree = BIOMES[spec.biome].tree
-        if spec.archetype in ("forest", "hollow") and tree:
-            assert spec.focal.asset == tree
-        else:
-            assert spec.focal.asset == "rock_cluster"
+        place = _place_of(spec)
+        assert (spec.focal.asset, spec.framing.asset) == (place.focal, place.framing)
 
 
 def test_the_framing_prop_is_close_and_at_the_edge_of_view():
@@ -611,7 +627,6 @@ def test_the_framing_prop_is_close_and_at_the_edge_of_view():
         assert 3 <= framing.distance_m <= 5  # what Unity keeps it to
         low, high = FRAMING_OFFSET_DEG
         assert low - 0.001 <= _apart(framing.azimuth_deg, facing) <= high + 0.001
-        assert framing.asset == (BIOMES[spec.biome].tree or "rock_cluster")
         sides.add((framing.azimuth_deg - facing) % 360 < 180)
     assert sides == {True, False}
 
@@ -679,7 +694,7 @@ def test_every_produced_spec_validates(values):
     for seed in (0, 1, 2**31, MAX_SEED):
         spec = MAPPER.map(_persona(**traits), seed, "t")
         SceneSpec.model_validate(json.loads(spec.model_dump_json()))
-        assert {p.asset for p in spec.props} <= {a for a, _ in BIOMES[spec.biome].props}
+        assert {p.asset for p in spec.props} <= {a for a, _ in _place_of(spec).props}
 
 
 def test_every_place_gives_a_valid_spec():
@@ -726,6 +741,9 @@ def test_the_0_4_settings_print_too():
             in tables)
     assert ("| forest | plain | mid | lake beside | dense | moss_rock_mix | 90 | none | 0.02 | none |"
             in tables)
-    assert "| > 0.65 | ringed | ringed |" in tables
-    assert "| ≤ 0.35 | scattered | poisson |" in tables
+    assert "| > 0.65 | ringed | ringed | (C − 0.65) / 0.35: loose rings → exact rings |" in tables
+    assert "| ≤ 0.35 | scattered | poisson | not sent |" in tables
+    assert ("| forest_lake | pine_large | pine_large | pine_large 1, bush 0.8, pine_medium 0.3, "
+            "rock_small 0.2, boulder 0.15 |") in tables
+    assert "| lakeside | wind_reeds 0.2 | birdsong_wetland |" in tables
     assert "| `focal.distance_m` | neuroticism | 40 | 25 |" in tables

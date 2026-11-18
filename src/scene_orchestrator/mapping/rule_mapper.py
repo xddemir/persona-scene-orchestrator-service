@@ -16,11 +16,18 @@ The persona chooses which place the scene is at, but only from a fixed list
 of places, each tuned by hand and checked in the VR headset
 (places_v1.yaml). It never sets a raw terrain number. A place is one Unity
 setting (archetype) with its landform, where the participant sits on it, the
-kind of water and where that lies from them, and how much grows; plus a biome
-and, for some, a season. The mapper picks the place mainly by shelter
-(pick_place). Light, fog, wind, prop density and colour still vary freely with
-the persona, by the linear rules, within each place's safe range (the fog's
-floor and cap).
+kind of water and where that lies from them, and how much grows; its own
+props (focal, framing, and a list, most typical first); a biome for the sky's
+colour and the sounds; and, for some, a season. The mapper picks the place
+mainly by shelter (pick_place). Light, fog, wind, prop density and colour
+still vary freely with the persona, by the linear rules, within each place's
+safe range (the fog's floor and cap).
+
+Which props a scene has is the place's, chosen by hand; the persona sets only
+amounts: how many of the list's kinds (openness takes the first 2..5), how
+many of each, how varied in size, and whether they stand in rings. Asset
+choice is not part of the research claim and has no theory behind it, and
+every free choice would add combinations to check in the headset.
 
 Why: shelter mostly comes from the terrain, from how enclosed the land is,
 where one sits on it and how far one sees. With one fixed landscape, a
@@ -144,10 +151,6 @@ LINEAR_RULES: tuple[LinearRule, ...] = (
     # conscientiousness -> order
     LinearRule("procedural_sky.clouds.banding", "conscientiousness", 0.0, 1.0,
                "clouds in regular rows rather than scattered"),
-    # Sent only with ringed props (conscientiousness above RINGED_ABOVE), so
-    # in practice 0.65..1: rings a little loose at the threshold, exact at 1.
-    LinearRule("props[].order", "conscientiousness", 0.0, 1.0,
-               "props keep more exactly to their rings"),
 )
 
 # neuroticism -> rain (snow in a snowy biome): none up to here, then rising to
@@ -172,8 +175,13 @@ CLUSTERED_ABOVE = 0.35  # grouped; below this, "scattered"
 # sent as the nearest it has.
 DISTRIBUTION_STAND_IN = {"scattered": "poisson"}
 
+# conscientiousness -> props[].order, sent only with ringed: how exactly the
+# props keep to their rings. Stretched over the ringed band, so it runs the
+# whole 0..1 that Unity reads: loose rings just above RINGED_ABOVE (each
+# strays up to about a third of a ring step), exact rings at 1.
+
 # openness -> number of prop types: 2 + round(3 * openness), so 2..5, taken
-# from the front of the biome's kit.
+# from the front of the place's list.
 PROP_TYPES_MIN, PROP_TYPES_SPAN = 2, 3
 
 # agreeableness: UNMAPPED. No parameter depends on it yet. Which (if any)
@@ -292,14 +300,10 @@ FOG_CAP: dict[str, float] = {
 LOW_SUN_TIMES = frozenset({"sunrise", "sunset"})
 DAY_SUN_OFFSET_DEG = (60.0, 120.0)
 
-# The focal prop stands where the participant faces, as far as its linear
-# rule says. In a forest or a hollow it is the biome's tree; elsewhere, and
-# where the biome has none, a rock cluster.
-FOCAL_TREE_ARCHETYPES = frozenset({"forest", "hollow"})
-FOCAL_ROCK = "rock_cluster"
-# The framing prop: the biome's tree (a rock cluster where it has none),
-# close by at the edge of view, this far to the left or right of the facing
-# (side and angle from the seed). Unity keeps it within 3-5 m.
+# The focal prop (the place's) stands where the participant faces, as far as
+# its linear rule says. The framing prop (the place's) stands close by at the
+# edge of view, this far to the left or right of the facing (side and angle
+# from the seed). Unity keeps it within 3-5 m.
 FRAMING_DISTANCE_M = 4.0
 FRAMING_OFFSET_DEG = (55.0, 80.0)
 
@@ -341,103 +345,35 @@ ACTIVITY = "seated_relaxation"
 
 SNOW_BIOMES = frozenset({"snowy_valley"})  # where what falls is snow, not rain
 
-# -- what each biome is made of ---------------------------------------------
+# -- what each biome sounds like --------------------------------------------
+
+# A biome no longer brings props: each place lists its own (places_v1.yaml).
+# It gives the sky its colour (below), whether rain or snow falls, and this.
 
 
 @dataclass(frozen=True)
-class BiomeKit:
-    tree: str | None  # the biome's tree, for the focal and framing props; None: it has none
-    # (catalogue prop, weight): weight scales the count. The first is the
-    # biome's signature prop and is always placed; openness takes 2..5 from
-    # the front. Exactly 5, all different, each one that places something in
-    # Unity (tests/test_catalogue.py).
-    props: tuple[tuple[str, float], ...]
+class BiomeSound:
     ambience: tuple[tuple[str, float], ...]  # (layer, gain), fixed; the water's sound is added by its kind
     birds: str  # gain and rate come from extraversion
 
-    @property
-    def names(self) -> frozenset[str]:
-        """Every catalogue name the kit can send: its tree and its props."""
-        return frozenset({a for a, _ in self.props} | ({self.tree} if self.tree else set()))
 
-
-# Comments name the old asset an entry stands in for, and "was" the entry it
-# replaced when the kits were cut to the props that place something (0.4).
-BIOMES: dict[str, BiomeKit] = {
-    "open_meadow": BiomeKit(
-        "bush",
-        (("grass_tuft", 1.0),
-         ("rock_cluster", 0.05),  # for wildflower_patch
-         ("bush", 0.1),  # was birch_light (for oak_solitary)
-         ("pine_medium", 0.05),  # for fence_post
-         ("rock_small", 0.05)),  # was driftwood (for hay_bale)
-        (("wind_grass", 0.3), ("insects", 0.15)), "birdsong_meadow",
+BIOME_SOUNDS: dict[str, BiomeSound] = {
+    "open_meadow": BiomeSound((("wind_grass", 0.3), ("insects", 0.15)), "birdsong_meadow"),
+    "forest_clearing": BiomeSound(
+        (("wind_canopy", 0.25), ("leaves_rustle", 0.2)), "birdsong_forest"
     ),
-    "forest_clearing": BiomeKit(
-        "pine_large",
-        (("pine_large", 1.0),
-         ("bush", 0.8),  # was fern
-         ("pine_medium", 0.3),  # for mushroom_cluster
-         ("rock_small", 0.2),  # was driftwood (mossy_log)
-         ("boulder", 0.15)),
-        (("wind_canopy", 0.25), ("leaves_rustle", 0.2)), "birdsong_forest",
-    ),
-    # Water lilies: only at a lake (checked when the places load).
-    "lakeside": BiomeKit(
-        "bush",
-        (("grass_tuft", 1.0),  # for reed_bed: the ground grows the reeds at the water
-         ("bush", 0.4),  # was birch_light
-         ("pine_medium", 0.3),  # was fern (for willow)
-         ("rock_cluster", 0.3),  # smooth_stone
-         ("water_lily", 0.05)),  # was driftwood (for wooden_jetty)
-        (("wind_reeds", 0.2),), "birdsong_wetland",
-    ),
+    "lakeside": BiomeSound((("wind_reeds", 0.2),), "birdsong_wetland"),
     # A pine_medium grove until a birch model exists; the id stays.
-    "birch_grove": BiomeKit(
-        "pine_medium",
-        (("pine_medium", 1.0),  # was birch_light
-         ("bush", 0.6),  # was fern
-         ("boulder", 0.2),  # was pine_medium (for birch_sapling)
-         ("grass_tuft", 0.4),  # wildflower_patch
-         ("rock_small", 0.2)),  # was driftwood (mossy_log)
-        (("wind_canopy", 0.25), ("leaves_rustle", 0.2)), "birdsong_forest",
-    ),
-    "coastal_pine": BiomeKit(
-        "pine_large",
-        (("pine_large", 1.0), ("grass_tuft", 0.8),
-         ("pine_medium", 0.4),  # for beach_shrub
-         ("rock_small", 0.2),  # was driftwood
-         ("boulder", 0.15)),
-        (("wind_pines", 0.2),), "seabirds",
-    ),
-    "alpine_basin": BiomeKit(
-        "pine_large",
-        (("pine_large", 1.0), ("grass_tuft", 0.8), ("pine_medium", 0.5),
-         ("boulder", 0.4), ("rock_cluster", 0.3)),
-        (("wind_high", 0.3),), "birdsong_alpine",
-    ),
-    "rocky_shore": BiomeKit(
-        None,
-        (("rock_cluster", 1.0), ("grass_tuft", 0.6),
-         ("boulder", 0.3),  # for tide_pool
-         ("rock_small", 0.2),  # for kelp_pile
-         ("bush", 0.2)),  # was driftwood
-        (("wind_coast", 0.25),), "seabirds",
-    ),
-    "snowy_valley": BiomeKit(
-        "pine_large",
-        (("pine_large", 1.0),
-         ("pine_medium", 0.4),  # for snow_drift
-         ("rock_cluster", 0.2),  # for frozen_shrub
-         ("boulder", 0.3),
-         ("rock_small", 0.15)),  # was driftwood (deadwood)
-        (("wind_snow", 0.3), ("snow_settle", 0.1)), "birdsong_winter",
-    ),
+    "birch_grove": BiomeSound((("wind_canopy", 0.25), ("leaves_rustle", 0.2)), "birdsong_forest"),
+    "coastal_pine": BiomeSound((("wind_pines", 0.2),), "seabirds"),
+    "alpine_basin": BiomeSound((("wind_high", 0.3),), "birdsong_alpine"),
+    "rocky_shore": BiomeSound((("wind_coast", 0.25),), "seabirds"),
+    "snowy_valley": BiomeSound((("wind_snow", 0.3), ("snow_settle", 0.1)), "birdsong_winter"),
 }
 
-# The places, checked against the kits and Unity's axis tables at import: a
+# The places, checked against Unity's catalogue and axis tables at import: a
 # list Unity would not build as written stops the service from starting.
-PLACES: Places = load_places(PLACES_FILE, kits={b: kit.names for b, kit in BIOMES.items()})
+PLACES: Places = load_places(PLACES_FILE)
 
 # -- the procedural sky, per biome ------------------------------------------
 
@@ -561,9 +497,9 @@ def map_persona(
             allow_candidates=allow_candidates,
         )
     biome, archetype = place.biome, place.setting
-    kit = BIOMES[biome]
+    sounds = BIOME_SOUNDS[biome]
     setting = CATALOGUE_V1.archetypes[archetype]
-    prop_assets = _pick_prop_types(kit, traits.openness)
+    prop_assets = _pick_prop_types(place, traits.openness)
 
     rng = random.Random(seed)  # the only source of variation besides traits
     sun_azimuth = _r(rng.uniform(0.0, 360.0))
@@ -603,13 +539,13 @@ def map_persona(
             cluster_count=(
                 max(1, count // PROPS_PER_CLUSTER) if distribution == "clustered" else None
             ),
-            order=_linear("props[].order", traits) if distribution == "ringed" else None,
+            order=_order(traits.conscientiousness) if distribution == "ringed" else None,
         ))
 
     sound = _water_sound(biome, water)
-    audio = [AudioLayer(layer=layer, gain=gain) for layer, gain in (*sound, *kit.ambience)]
+    audio = [AudioLayer(layer=layer, gain=gain) for layer, gain in (*sound, *sounds.ambience)]
     audio.append(AudioLayer(
-        layer=kit.birds,
+        layer=sounds.birds,
         gain=_linear("audio.birds.gain", traits),
         event_rate_per_min=_linear("audio.birds.event_rate_per_min", traits),
     ))
@@ -642,12 +578,12 @@ def map_persona(
         ),
         props=props,
         focal=Anchor(
-            asset=_focal_asset(kit, archetype),
+            asset=place.focal,
             distance_m=_linear("focal.distance_m", traits),
             azimuth_deg=facing,
         ),
         framing=Anchor(
-            asset=kit.tree or FOCAL_ROCK,
+            asset=place.framing,
             distance_m=FRAMING_DISTANCE_M,
             azimuth_deg=_r((facing + framing_side * framing_offset) % 360.0),
         ),
@@ -740,6 +676,12 @@ def _intended_distribution(conscientiousness: float) -> str:
     return "scattered"
 
 
+def _order(conscientiousness: float) -> float:
+    """props[].order for ringed props: (C - 0.65) / 0.35, the ringed band
+    stretched over 0..1."""
+    return _r(min(1.0, max(0.0, (conscientiousness - RINGED_ABOVE) / (1.0 - RINGED_ABOVE))))
+
+
 def _side(rng: random.Random) -> float:
     """-1 (left, anticlockwise) or +1 (right, clockwise), from the seed."""
     return 1.0 if rng.random() < 0.5 else -1.0
@@ -753,12 +695,6 @@ def _facing(
     if time_of_day in LOW_SUN_TIMES:
         return sun_azimuth
     return _r((sun_azimuth + day_offset) % 360.0)
-
-
-def _focal_asset(kit: BiomeKit, archetype: str) -> str:
-    if archetype in FOCAL_TREE_ARCHETYPES and kit.tree:
-        return kit.tree
-    return FOCAL_ROCK
 
 
 def _water_sound(biome: str, kind: str) -> tuple[tuple[str, float], ...]:
@@ -812,11 +748,11 @@ def _rgb(channels) -> tuple[float, float, float]:
     return (r, g, b)
 
 
-def _pick_prop_types(kit: BiomeKit, openness: float) -> list[tuple[str, float]]:
-    """The first n of the kit, n = 2 + round(3 * openness): no seed draw, so
-    the persona alone decides which kinds of prop there are."""
+def _pick_prop_types(place: Place, openness: float) -> list[tuple[str, float]]:
+    """The first n of the place's list, n = 2 + round(3 * openness): no seed
+    draw, so the persona sets how many kinds and the place which ones."""
     n = PROP_TYPES_MIN + _round_half_up(PROP_TYPES_SPAN * openness)
-    return list(kit.props[:n])
+    return list(place.props[:n])
 
 
 def _lerp(at_0: float, at_1: float, t: float) -> float:
@@ -856,7 +792,8 @@ def rules_markdown() -> str:
         (f"Per archetype (Unity catalogue {CATALOGUE_V1.version})", _setting_table()),
         ("Facing, focal and framing", _view_table()),
         ("Prop distribution (conscientiousness)", _distribution_table()),
-        ("Biome kits", _kit_table()),
+        ("Props per place", _place_props_table()),
+        ("Biome sounds", _sound_table()),
     )
     return "\n\n".join(f"### {title}\n\n{table}" for title, table in sections)
 
@@ -976,9 +913,8 @@ def _view_table() -> str:
             ("", f"day: the sun's azimuth ± {day}° (side and angle from the seed)"),
             ("`focal.azimuth_deg`", "the facing"),
             ("`focal.distance_m`", f"{focal.at_0:g} m → {focal.at_1:g} m by {focal.trait}"),
-            ("`focal.asset`", f"the biome's tree in {' and '.join(sorted(FOCAL_TREE_ARCHETYPES))}; "
-                              f"else {FOCAL_ROCK}"),
-            ("`framing.asset`", f"the biome's tree; {FOCAL_ROCK} where it has none"),
+            ("`focal.asset`", "the place's focal"),
+            ("`framing.asset`", "the place's framing prop"),
             ("`framing.distance_m`", f"{FRAMING_DISTANCE_M:g} m"),
             ("`framing.azimuth_deg`", f"the facing ± {side}° (side and angle from the seed)"),
         ),
@@ -991,15 +927,26 @@ def _distribution_table() -> str:
         (f"> {CLUSTERED_ABOVE:g}", "clustered"),
         (f"≤ {CLUSTERED_ABOVE:g}", "scattered"),
     )
+    span = 1.0 - RINGED_ABOVE
+    order = {"ringed": f"(C − {RINGED_ABOVE:g}) / {span:g}: loose rings → exact rings"}
     return _table(
-        ("Conscientiousness", "Rule", "Sent until Unity builds it"),
-        ((when, rule, DISTRIBUTION_STAND_IN.get(rule, rule)) for when, rule in rows),
+        ("Conscientiousness", "Rule", "Sent until Unity builds it", "`props[].order`"),
+        ((when, rule, DISTRIBUTION_STAND_IN.get(rule, rule), order.get(rule, "not sent"))
+         for when, rule in rows),
     )
 
 
-def _kit_table() -> str:
+def _place_props_table() -> str:
     return _table(
-        ("Biome", "Tree", "Props (weight; the first always placed)"),
-        ((biome, kit.tree or "none", ", ".join(f"{a} {w:g}" for a, w in kit.props))
-         for biome, kit in BIOMES.items()),
+        ("Place", "Focal", "Framing", "Props, most typical first (weight); openness takes 2–5"),
+        ((p.id, p.focal, p.framing, ", ".join(f"{a} {w:g}" for a, w in p.props))
+         for p in PLACES.places),
+    )
+
+
+def _sound_table() -> str:
+    return _table(
+        ("Biome", "Ambience (gain)", "Birds"),
+        ((biome, ", ".join(f"{layer} {gain:g}" for layer, gain in s.ambience), s.birds)
+         for biome, s in BIOME_SOUNDS.items()),
     )

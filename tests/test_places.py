@@ -17,7 +17,10 @@ from scene_orchestrator import places as places_cli
 from scene_orchestrator.adapters import ChatbotV2Adapter
 from scene_orchestrator.api.app import create_app
 from scene_orchestrator.manifest import read_manifest
+from scene_orchestrator.catalogue import CATALOGUE_V1
 from scene_orchestrator.mapping.places import (
+    MIN_PROP_KINDS,
+    NOT_FOR_PLACES,
     PLACES_FILE,
     Place,
     PlacesError,
@@ -25,7 +28,6 @@ from scene_orchestrator.mapping.places import (
     set_place_fields,
 )
 from scene_orchestrator.mapping.rule_mapper import (
-    BIOMES,
     PLACES,
     NoUsablePlace,
     RuleSpecMapper,
@@ -37,7 +39,6 @@ from scene_orchestrator.models import PersonaProfile, SceneSpec, Traits
 from scene_orchestrator.pipeline import ScenePipeline
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "personas" / "chatbot"
-KITS = {biome: kit.names for biome, kit in BIOMES.items()}
 TEXT = PLACES_FILE.read_text(encoding="utf-8")
 
 # The starting list, as handed over on 2026-11-18. Change it here when the
@@ -80,19 +81,32 @@ def _persona(**traits) -> PersonaProfile:
 
 
 def _parse(text: str):
-    return parse_places(text.encode("utf-8"), kits=KITS, path=Path("places_test.yaml"))
+    return parse_places(text.encode("utf-8"), path=Path("places_test.yaml"))
+
+
+FOREST_PROPS = [("pine_large", 1.0), ("bush", 0.8), ("pine_medium", 0.3), ("rock_small", 0.2),
+                ("boulder", 0.15)]
 
 
 def _with_place(**fields) -> str:
-    """The real file with one more place, forest_lake's fields overridden."""
+    """The real file with one more place: a forest lake, with these fields instead."""
     place = {
         "id": "extra", "setting": "forest", "biome": "forest_clearing", "landform": "plain",
         "position": "mid", "water": "lake", "water_relation": "beside", "vegetation": "dense",
-        "shelter_level": 3, "novelty": 0.5, "status": "candidate", "checked": None, "note": "",
+        "shelter_level": 3, "novelty": 0.5, "focal": "pine_large", "framing": "pine_large",
+        "props": FOREST_PROPS, "status": "candidate", "checked": None, "note": "",
         **fields,
     }
     lines = [f"  - id: {place.pop('id')}"]
-    lines += [f"    {key}: {json.dumps(value)}" for key, value in place.items() if value != "<omit>"]
+    for key, value in place.items():
+        if value == "<omit>":
+            continue
+        if key == "props" and isinstance(value, list):
+            lines.append("    props:")
+            lines += [f"      - {item}" if isinstance(item, str)  # a malformed line
+                      else f"      - {item[0]}: {json.dumps(item[1])}" for item in value]
+        else:
+            lines.append(f"    {key}: {json.dumps(value)}")
     return TEXT + "\n" + "\n".join(lines) + "\n"
 
 
@@ -166,10 +180,19 @@ def test_a_place_and_a_spec_are_checked_by_the_same_rules():
           "water_relation": "below"}, "a summit never has a lake"),
         ({"setting": "meadow", "water": "sea"}, "a meadow never has the sea"),
         ({"setting": "beach", "landform": "shore", "water": "lake"}, "a beach never has a lake"),
-        # water lilies only at a lake
-        ({"biome": "lakeside", "water": "river"}, "water_lily, which only goes with a lake"),
-        ({"biome": "lakeside", "water": "none", "water_relation": "absent"},
-         "water_lily, which only goes with a lake"),
+        # the place's props
+        ({"props": FOREST_PROPS[:4]}, "props: 4 kinds, needs at least 5"),
+        ({"props": [*FOREST_PROPS, ("bush", 0.1)]}, "props: bush listed 2 times"),
+        ({"props": [*FOREST_PROPS[:4], ("water_lily", 0.05)]},
+         "props: water_lily: Unity lays a spec's props out on dry land"),
+        ({"props": [*FOREST_PROPS[:4], ("fern", 0.5)]}, "props: fern places nothing in Unity"),
+        ({"props": [*FOREST_PROPS[:4], ("birch_light", 0.5)]}, "birch_light places nothing"),
+        ({"props": [*FOREST_PROPS[:4], ("mountain", 0.5)]}, "mountain places nothing"),
+        ({"focal": "driftwood"}, "focal: driftwood places nothing"),
+        ({"framing": "water_lily"}, "framing: water_lily: Unity lays"),
+        ({"props": [*FOREST_PROPS[:4], ("boulder", 0)]}, "greater than 0"),
+        ({"props": ["pine_large", "bush"]}, "one 'name: weight' line"),
+        ({"focal": "<omit>"}, "focal"),
         # ids, names and fields
         ({"id": "forest_lake"}, "forest_lake: listed 2 times"),
         ({"biome": "volcano"}, "biome"),
@@ -187,10 +210,29 @@ def test_a_place_unity_would_change_fails_the_load(fields, why):
         _parse(_with_place(**fields))
 
 
-def test_a_biome_without_a_kit_fails_the_load():
-    kits = {b: names for b, names in KITS.items() if b != "lakeside"}
-    with pytest.raises(PlacesError, match="meadow_lake: biome lakeside has no kit"):
-        parse_places(TEXT.encode(), kits=kits, path=Path("x.yaml"))
+def test_every_place_has_its_own_props_most_typical_first():
+    """At least five kinds with a model in Unity, all different; the first
+    is always placed, openness takes up to five."""
+    for place in PLACES.places:
+        names = [name for name, _ in place.props]
+        assert len(names) == len(set(names)) >= MIN_PROP_KINDS, place.id
+        assert place.names <= CATALOGUE_V1.props - set(NOT_FOR_PLACES), place.id
+        assert all(weight > 0 for _, weight in place.props)
+
+
+def test_no_place_asks_for_water_lilies():
+    """Unity's ground floats its own on a lake; a spec's would lie on dry land."""
+    assert not any("water_lily" in place.names for place in PLACES.places)
+
+
+def test_the_props_are_read_in_the_files_order():
+    assert PLACES.get("forest_lake").props == (
+        ("pine_large", 1.0), ("bush", 0.8), ("pine_medium", 0.3), ("rock_small", 0.2),
+        ("boulder", 0.15),
+    )
+    assert (PLACES.get("forest_lake").focal, PLACES.get("forest_lake").framing) == (
+        "pine_large", "pine_large"
+    )
 
 
 def test_a_valid_extra_place_loads():
@@ -419,7 +461,7 @@ def test_mark_sets_status_date_and_note_and_nothing_else(places_file):
         ("    checked: null", "    checked: 2026-11-18"),
         ('    note: ""', '    note: "reads as a pond: \\"quiet\\", even at dusk"'),
     ]
-    reloaded = parse_places(places_file.read_bytes(), kits=KITS, path=places_file)
+    reloaded = parse_places(places_file.read_bytes(), path=places_file)
     assert reloaded.get("hollow_pond") == place
     assert reloaded.get("forest_lake") == PLACES.get("forest_lake")  # the one before it
     assert reloaded.get("snow_hollow") == PLACES.get("snow_hollow")  # and after
@@ -443,7 +485,7 @@ def test_the_mark_command_writes_the_file_it_is_pointed_at(places_file, monkeypa
     monkeypatch.setattr(places_cli, "PLACES_FILE", places_file)
     assert places_cli.main(["mark", "open_meadow", "rejected", "--note", "too flat"]) == 0
     assert "open_meadow: rejected, checked" in capsys.readouterr().out
-    assert parse_places(places_file.read_bytes(), kits=KITS, path=places_file).get(
+    assert parse_places(places_file.read_bytes(), path=places_file).get(
         "open_meadow"
     ).status == "rejected"
     assert PLACES_FILE.read_text(encoding="utf-8") == TEXT  # the real file untouched
@@ -451,7 +493,7 @@ def test_the_mark_command_writes_the_file_it_is_pointed_at(places_file, monkeypa
 
 def test_a_marked_place_is_picked_without_candidates(places_file):
     places_cli.mark("valley_lake_view", "verified", path=places_file, today=date(2026, 11, 18))
-    places = parse_places(places_file.read_bytes(), kits=KITS, path=places_file)
+    places = parse_places(places_file.read_bytes(), path=places_file)
     mapper = RuleSpecMapper(places=places)  # verified only
     for neuroticism in (0.0, 0.5, 1.0):  # the only usable place, whatever the shelter
         persona = _persona(neuroticism=neuroticism)

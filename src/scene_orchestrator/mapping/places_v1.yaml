@@ -2,9 +2,10 @@
 #
 # The mapper picks one of these by the persona's shelter (shelter_level) and,
 # within that, novelty; see rule_mapper.py. Each is one Unity setting
-# (archetype) with its axes set, plus the biome (props, sky colour, sounds).
-# Only the light, fog, wind, prop density and colour vary from the persona;
-# nothing here does.
+# (archetype) with its axes set, its own props, and a biome (the sky's colour
+# and the sounds). The persona sets only amounts: how many of the props'
+# kinds, how many of each, how varied in size, ringed or not; and the light,
+# fog, wind and colour. Which props they are is decided here, by hand.
 #
 #   setting        hollow | overlook | summit | forest | meadow | beach
 #   biome          a kit in rule_mapper.BIOMES
@@ -16,6 +17,13 @@
 #   season         spring | summer | autumn | winter; left out: the setting's
 #   shelter_level  1 open .. 5 sheltered
 #   novelty        0 familiar .. 1 unusual
+#   focal          the prop the view is composed around, straight ahead
+#   framing        the prop close by at the edge of view
+#   props          the place's props, most typical first, each "name: weight"
+#                  (weight scales its count). Openness takes the first 2..5,
+#                  so at least 5, all different, each one Unity has a model
+#                  for. No water_lily: Unity lays a spec's props out on dry
+#                  land; the ground floats its own lilies on a lake.
 #   status         candidate | verified | rejected
 #   checked        the date of the last headset check, or null
 #
@@ -41,6 +49,14 @@ places:
     vegetation: dense
     shelter_level: 5
     novelty: 0.2
+    focal: pine_large
+    framing: pine_large
+    props:
+      - pine_large: 1
+      - bush: 0.8
+      - pine_medium: 0.3
+      - rock_small: 0.2
+      - boulder: 0.15
     status: candidate
     checked: null
     note: ""
@@ -55,6 +71,14 @@ places:
     vegetation: dense
     shelter_level: 5
     novelty: 0.4
+    focal: pine_medium
+    framing: pine_medium
+    props:
+      - pine_medium: 1
+      - bush: 0.6
+      - grass_tuft: 0.4
+      - rock_small: 0.2
+      - boulder: 0.2
     status: candidate
     checked: null
     note: ""
@@ -70,6 +94,14 @@ places:
     season: winter  # the ExperimentScene has a moss_rock_mix (Winter) ground style
     shelter_level: 5
     novelty: 0.9
+    focal: pine_large
+    framing: pine_large
+    props:
+      - pine_large: 1
+      - pine_medium: 0.4
+      - rock_cluster: 0.2
+      - boulder: 0.3
+      - rock_small: 0.15
     status: candidate
     checked: null
     note: ""
@@ -84,6 +116,14 @@ places:
     vegetation: moderate
     shelter_level: 4
     novelty: 0.3
+    focal: pine_medium
+    framing: pine_medium
+    props:
+      - pine_medium: 1
+      - bush: 0.6
+      - grass_tuft: 0.4
+      - rock_small: 0.2
+      - boulder: 0.2
     status: candidate
     checked: null
     note: ""
@@ -98,6 +138,14 @@ places:
     vegetation: moderate
     shelter_level: 4
     novelty: 0.5
+    focal: pine_large
+    framing: pine_large
+    props:
+      - pine_large: 1
+      - bush: 0.8
+      - pine_medium: 0.3
+      - rock_small: 0.2
+      - boulder: 0.15
     status: candidate
     checked: null
     note: ""
@@ -112,6 +160,14 @@ places:
     vegetation: dense
     shelter_level: 4
     novelty: 0.8
+    focal: rock_cluster
+    framing: pine_large
+    props:
+      - pine_large: 1
+      - grass_tuft: 0.8
+      - pine_medium: 0.5
+      - boulder: 0.4
+      - rock_cluster: 0.3
     status: candidate
     checked: null
     note: ""
@@ -126,6 +182,14 @@ places:
     vegetation: moderate
     shelter_level: 3
     novelty: 0.1
+    focal: rock_cluster
+    framing: bush
+    props:
+      - grass_tuft: 1
+      - bush: 0.4
+      - pine_medium: 0.3
+      - rock_cluster: 0.3
+      - rock_small: 0.05
     status: candidate
     checked: null
     note: ""
@@ -140,6 +204,14 @@ places:
     vegetation: moderate
     shelter_level: 3
     novelty: 0.5
+    focal: rock_cluster
+    framing: bush
+    props:
+      - grass_tuft: 1
+      - bush: 0.4
+      - pine_medium: 0.3
+      - rock_cluster: 0.3
+      - rock_small: 0.05
     status: candidate
     checked: null
     note: ""
@@ -154,6 +226,14 @@ places:
     vegetation: moderate
     shelter_level: 3
     novelty: 0.4
+    focal: rock_cluster
+    framing: pine_large
+    props:
+      - pine_large: 1
+      - grass_tuft: 0.8
+      - pine_medium: 0.4
+      - rock_small: 0.2
+      - boulder: 0.15
     status: candidate
     checked: null
     note: ""
@@ -168,6 +248,14 @@ places:
     vegetation: sparse
     shelter_level: 2
     novelty: 0.0
+    focal: rock_cluster
+    framing: bush
+    props:
+      - grass_tuft: 1
+      - rock_cluster: 0.05
+      - bush: 0.1
+      - pine_medium: 0.05
+      - rock_small: 0.05
     status: candidate
     checked: null
     note: ""
@@ -182,6 +270,14 @@ places:
     vegetation: sparse
     shelter_level: 2
     novelty: 0.5
+    focal: rock_cluster
+    framing: bush
+    props:
+      - grass_tuft: 1
+      - rock_cluster: 0.05
+      - bush: 0.1
+      - pine_medium: 0.05
+      - rock_small: 0.05
     status: candidate
     checked: null
     note: ""
@@ -196,6 +292,14 @@ places:
     vegetation: sparse
     shelter_level: 2
     novelty: 0.8
+    focal: rock_cluster
+    framing: rock_cluster
+    props:
+      - rock_cluster: 1
+      - grass_tuft: 0.6
+      - boulder: 0.3
+      - rock_small: 0.2
+      - bush: 0.2
     status: candidate
     checked: null
     note: ""
@@ -210,6 +314,14 @@ places:
     vegetation: sparse
     shelter_level: 1
     novelty: 0.3
+    focal: rock_cluster
+    framing: bush
+    props:
+      - grass_tuft: 1
+      - rock_cluster: 0.05
+      - bush: 0.1
+      - pine_medium: 0.05
+      - rock_small: 0.05
     status: candidate
     checked: null
     note: ""
@@ -224,6 +336,14 @@ places:
     vegetation: sparse
     shelter_level: 1
     novelty: 0.7
+    focal: rock_cluster
+    framing: pine_large
+    props:
+      - pine_large: 1
+      - grass_tuft: 0.8
+      - pine_medium: 0.4
+      - rock_small: 0.2
+      - boulder: 0.15
     status: candidate
     checked: null
     note: ""
@@ -238,6 +358,14 @@ places:
     vegetation: sparse
     shelter_level: 1
     novelty: 0.9
+    focal: rock_cluster
+    framing: pine_large
+    props:
+      - pine_large: 1
+      - grass_tuft: 0.8
+      - pine_medium: 0.5
+      - boulder: 0.4
+      - rock_cluster: 0.3
     status: candidate
     checked: null
     note: ""

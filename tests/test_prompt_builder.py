@@ -22,11 +22,14 @@ from scene_orchestrator.mapping.prompt_builder import (
     CLOSED_ABOVE,
     MILKY_WAY_BANDS,
     MOON_BANDS,
+    PLANT_WORDS,
+    PLANTS_NAMED,
     RAIN_BANDS,
     SNOW_BANDS,
     STAR_BANDS,
     VIEW_PHRASES,
     WATER_PLACE_PHRASES,
+    plant_phrase,
 )
 from scene_orchestrator.mapping.rule_mapper import PLACES
 from scene_orchestrator.models import PersonaProfile, SceneSpec, Traits, Weather
@@ -62,7 +65,8 @@ def _all_specs():
 def test_p01_prompt_is_sheltered_before_sunrise():
     spec = _spec("P01")  # at the foot of the terraced mountain (terraces_foot)
     prompt = BUILDER.build(spec)
-    assert "sheltered alpine basin at dawn before sunrise" in prompt
+    assert "a sheltered landscape at dawn before sunrise" in prompt
+    assert "among tall pines, tufts of grass and young pines" in prompt  # its first props
     assert "mostly cloudy sky" in prompt
     assert "seen from the foot of a terraced mountain" in prompt
     # The summit caps the fog, so the horizon still shows.
@@ -178,6 +182,23 @@ def test_every_place_is_named_as_it_is_built():
             assert VIEW_PHRASES[(place.landform, place.position)] in prompt
         if place.water != "none":
             assert WATER_PLACE_PHRASES[(place.water, place.water_relation)] in prompt
+
+
+@pytest.mark.parametrize("spec", list(_all_specs()))
+def test_the_plants_named_are_the_ones_the_spec_places(spec):
+    """No birches over a pine grove: the words come from the place's own list."""
+    prompt = BUILDER.build(spec)
+    placed = {p.asset for p in spec.props} | {spec.focal.asset, spec.framing.asset}
+    for asset, words in PLANT_WORDS.items():
+        if words in prompt:
+            assert asset in placed
+    assert "birch" not in prompt
+    assert plant_phrase(spec).count(",") + 1 <= PLANTS_NAMED
+
+
+def test_a_snowy_place_is_named_snowy():
+    spec = RuleSpecMapper(place_id="snow_hollow").map(_persona(), 1, "t")
+    assert "a quiet snowy landscape" in BUILDER.build(spec)
 
 
 def test_every_position_unity_builds_has_a_view():

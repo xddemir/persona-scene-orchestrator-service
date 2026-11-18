@@ -10,7 +10,7 @@ The image and the procedural sky are two renderings of one description: the
 hour, the cloud cover, the moon, the stars and the rain named here are the
 ones the sky shader draws from the same spec. The view named (the place's
 landform, where the participant sits on it, and its water) is the land Unity
-builds under it.
+builds under it, and the plants named are the props the spec places there.
 """
 
 from __future__ import annotations
@@ -119,16 +119,26 @@ WIND_BANDS: tuple[Band, ...] = (  # motion.wind_strength
     (None, None, ""),
 )
 
-BIOME_PHRASES: dict[str, str] = {
-    "coastal_pine": "coastal pine clearing",
-    "open_meadow": "wildflower meadow",  # not "open meadow": "an open open meadow"
-    "forest_clearing": "forest clearing",
-    "snowy_valley": "snowy valley",
-    "lakeside": "lakeside shore",  # only ever at a lake (places_v1.yaml)
-    "rocky_shore": "rocky shoreline",
-    "birch_grove": "birch grove",
-    "alpine_basin": "alpine basin",
+# What the land is, by its season (terrain.season, else the archetype's). The
+# biome's name is not used: its words ("birch grove", "lakeside shore") named
+# trees and water the place may not have.
+SEASON_LAND: dict[str, str] = {
+    "summer": "landscape",
+    "spring": "spring landscape",
+    "autumn": "autumn landscape",
+    "winter": "snowy landscape",
 }
+
+# The plants the panorama names: only those the spec places (its props, then
+# its focal and framing, all from the place's own list), in that order, at
+# most PLANTS_NAMED. Rocks are left to the view ("a rocky shore").
+PLANT_WORDS: dict[str, str] = {
+    "pine_large": "tall pines",
+    "pine_medium": "young pines",
+    "bush": "bushes",
+    "grass_tuft": "tufts of grass",
+}
+PLANTS_NAMED = 3
 
 # The view from where the participant sits: the place's landform and their
 # position on it (terrain.landform, terrain.position, else the archetype's),
@@ -155,7 +165,7 @@ VIEW_PHRASES: dict[tuple[str, str], str] = {
 }
 # On a plain, the archetype's woods or grass are the view.
 PLAIN_PHRASES: dict[str, str] = {
-    "forest": "in a clearing among tall trees",
+    "forest": "in a woodland clearing",
     "meadow": "in open grassland",
 }
 PLAIN_PHRASE = "on open level ground"  # a plain in any other archetype
@@ -210,12 +220,13 @@ class TemplatePromptBuilder:
             if spec.terrain.water.present
             else ""
         )
-        view, where_water = view_phrases(spec, sun_named=not closed)
+        land, view, where_water = place_phrases(spec, sun_named=not closed)
         slots = [
             TRIGGER,
-            f"{band(ENCLOSURE_BANDS, spec.spatial.enclosure)} {BIOME_PHRASES[spec.biome]} {time}",
+            f"{band(ENCLOSURE_BANDS, spec.spatial.enclosure)} {land} {time}",
             view,
             where_water,
+            plant_phrase(spec),
             band(CLOUD_BANDS, sky.clouds.coverage),
             band(MOON_BANDS, lighting.moon_phase) if heavens else "",
             band(STAR_BANDS, sky.stars.density * sky.stars.brightness) if heavens else "",
@@ -234,9 +245,10 @@ class TemplatePromptBuilder:
         return ", ".join(slot for slot in slots if slot)
 
 
-def view_phrases(spec: SceneSpec, *, sun_named: bool) -> tuple[str, str]:
-    """(where the participant sits, where the water is), each "" when there
-    is nothing to say: from the place's axes, resolved as Unity resolves them."""
+def place_phrases(spec: SceneSpec, *, sun_named: bool) -> tuple[str, str, str]:
+    """(what the land is, where the participant sits, where the water is),
+    the last two "" when there is nothing to say: from the place's axes,
+    resolved as Unity resolves them."""
     terrain = spec.terrain
     axes = resolve_axes(
         spec.archetype,
@@ -246,6 +258,7 @@ def view_phrases(spec: SceneSpec, *, sun_named: bool) -> tuple[str, str]:
         placement=terrain.spawn.placement,
         water=terrain.water.kind,
         water_relation=terrain.water_relation,
+        season=terrain.season,
     )
     view = VIEW_PHRASES[(axes.landform, axes.position)]
     if axes.landform == "plain":
@@ -254,7 +267,19 @@ def view_phrases(spec: SceneSpec, *, sun_named: bool) -> tuple[str, str]:
     toward = SEA_TOWARD_SUN.get(spec.lighting.time_of_day) if sun_named else None
     if axes.water == "sea" and toward:
         water = f"{water}, {toward}"
-    return view, water
+    return SEASON_LAND[axes.season], view, water
+
+
+def plant_phrase(spec: SceneSpec) -> str:
+    """"among tall pines, bushes and tufts of grass": the plants the spec
+    places, so the painted ground shows what Unity builds. "" for none."""
+    assets = [p.asset for p in spec.props] + [spec.focal.asset, spec.framing.asset]
+    words = list(dict.fromkeys(PLANT_WORDS[a] for a in assets if a in PLANT_WORDS))
+    words = words[:PLANTS_NAMED]
+    if not words:
+        return ""
+    listed = words[0] if len(words) == 1 else f"{', '.join(words[:-1])} and {words[-1]}"
+    return f"among {listed}"
 
 
 def band(bands: tuple[Band, ...], value: float) -> str:

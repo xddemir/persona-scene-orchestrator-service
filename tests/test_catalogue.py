@@ -29,7 +29,7 @@ from scene_orchestrator.axes import (
     setting_problems,
 )
 from scene_orchestrator.catalogue import CATALOGUE_V1, RESERVED_PROPS, EnvironmentRules, Need
-from scene_orchestrator.mapping.rule_mapper import BIOMES, LINEAR_RULES
+from scene_orchestrator.mapping.rule_mapper import LINEAR_RULES, PLACES
 from scene_orchestrator.models import (
     Landform,
     Position,
@@ -151,9 +151,9 @@ def test_the_axes_are_the_specs_literals():
             assert list(row) == list(columns)
 
 
-def test_every_kit_places_something():
-    for biome, kit in BIOMES.items():
-        assert kit.names <= PLACING_PROPS_V1, biome
+def test_every_place_asks_only_for_props_that_place_something():
+    for place in PLACES.places:
+        assert place.names <= PLACING_PROPS_V1 - {"water_lily"}, place.id
 
 
 # -- what Unity's GroundCover reads: don't break it -------------------------
@@ -299,15 +299,15 @@ def _places_something(catalogue: dict[str, Any], name: str) -> bool:
 
 
 @needs_unity
-def test_every_kit_tree_and_prop_places_something_in_unity():
+def test_every_places_props_focal_and_framing_place_something_in_unity():
     catalogue = _catalogue()
     assert catalogue["catalogueVersion"] == CATALOGUE_V1.version
-    for biome, kit in BIOMES.items():
-        for name in sorted(kit.names):
-            assert _places_something(catalogue, name), f"{biome}: {name} places nothing"
+    for place in PLACES.places:
+        for name in sorted(place.names):
+            assert _places_something(catalogue, name), f"{place.id}: {name} places nothing"
     for name in CATALOGUE_V1.props | RESERVED_PROPS:
         assert _places_something(catalogue, name), name
-    for name in ("fern", "driftwood", "birch_light"):  # why they left the kits
+    for name in ("fern", "driftwood", "birch_light"):  # why no place lists them
         assert not _places_something(catalogue, name)
 
 

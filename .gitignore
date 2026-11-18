@@ -1,6 +1,8 @@
 # Generated scenes. Reproducible from persona + seed, so they are outputs, not
 # sources.
 out/
+# The scenes made with SceneSpec 0.3 (before the places), kept for the record.
+out_v03/
 
 .venv/
 __pycache__/

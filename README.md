@@ -238,9 +238,9 @@ baseline. The full reasoning is the docstring of
 | `terrain.spawn.facing_deg` | A low sun is faced; at night, the moon; by day the sun stands 60–120° to one side |
 | `terrain.spawn.placement` | `null`: `terrain.position` says where the participant sits, and Unity reads the facing with it |
 | `spatial.prospect_refuge_bias` | From the place's `shelter_level`: 4–5 refuge, 1–2 prospect, 3 balanced |
-| `props` | The first 2–5 of the biome's kit (openness); `order` from conscientiousness, sent only with `ringed` |
-| `focal` | The prop the view is composed around, straight ahead: 40 m away when calm, 25 m when anxious |
-| `framing` | The biome's tree (or a rock cluster) 4 m away, 55–80° to one side, at the edge of view |
+| `props` | The first 2–5 of the place's own list (openness); `order` = (C − 0.65) / 0.35, sent only with `ringed` (C > 0.65) |
+| `focal` | The place's focal prop, straight ahead: 40 m away when calm, 25 m when anxious |
+| `framing` | The place's framing prop, 4 m away, 55–80° to one side, at the edge of view |
 | `terrain.ground_material`, `macro_shape`, `amplitude_m`, `feature_scale_m`, `roughness`, `water.distance_m`, `water.azimuth_deg`, `spatial.silhouette_distance_m` | Never sent (`null`): the archetype's. For experiments by hand only |
 
 **The pick rule** (`pick_place`, no seed): shelter (today neuroticism) gives a target band,
@@ -268,12 +268,17 @@ openness); on a tie, the first in the list. Usable means `verified`, plus `candi
   forest, which has no mountains. It never goes below an archetype's fog floor (the forest's 0.02),
   which Unity would raise it to anyway.
 - The water's sound follows its kind: a stream with a river, lapping with a lake, waves at the sea.
+  The biome now gives only the sounds, the sky's colour and whether rain or snow falls.
 - The skybox prompt names the view from the place's landform and position (e.g. "seen from the foot
-  of a terraced mountain") and its water from the kind and relation ("a lake far below"), so the
-  painted horizon agrees with the land.
-- Props, the focal and the framing use only catalogue names that place something in Unity
+  of a terraced mountain"), its water from the kind and relation ("a lake far below"), and its
+  plants from the props the spec places ("among tall pines and tufts of grass"), so the painted
+  panorama agrees with the land.
+- Which props a scene has is the place's, picked by hand in `places_v1.yaml`: a focal, a framing
+  prop and at least five kinds, most typical first. The persona sets only amounts: how many kinds,
+  how many of each, how varied in size, ringed or not. Every name must place something in Unity
   ([`catalogue.py`](src/scene_orchestrator/catalogue.py)). `mountain`, `cliff` and `road_rocks`
-  are never sent: Unity places them itself.
+  are never sent: Unity places them itself. Nor is `water_lily`: Unity lays a spec's props out on
+  dry land, and the ground floats its own lilies on a lake.
 - Unity builds `poisson`, `clustered` and `ringed`. Until it builds `scattered`, that is sent as
   `poisson`.
 - The seed only decides where and which way: the sun's, moon's and wind's azimuths, the moon's

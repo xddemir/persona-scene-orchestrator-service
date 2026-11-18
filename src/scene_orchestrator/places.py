@@ -30,7 +30,7 @@ from typing import Any
 
 from .config import ConfigError, load_config
 from .mapping.places import PLACES_FILE, Place, PlacesError, parse_places, set_place_fields
-from .mapping.rule_mapper import BIOMES, PLACES, RuleSpecMapper
+from .mapping.rule_mapper import PLACES, RuleSpecMapper
 from .models import PersonaProfile, Traits
 from .outputs import write_bytes_atomic
 from .pipeline import SceneOutcome, ScenePipeline
@@ -76,7 +76,7 @@ def mark(
 ) -> Place:
     """Set a place's status, checked and (if given) note in the file at `path`."""
     raw = path.read_bytes()
-    before = parse_places(raw, kits=_kits(), path=path)
+    before = parse_places(raw, path=path)
     before.get(place_id)  # an unknown id fails here, naming the file
     checked = today or date.today()
     fields = {"status": status, "checked": checked.isoformat()}
@@ -84,7 +84,7 @@ def mark(
         # A JSON string is a valid YAML double-quoted one.
         fields["note"] = json.dumps(note, ensure_ascii=False)
     text = set_place_fields(raw.decode("utf-8"), place_id, fields)
-    after = parse_places(text.encode("utf-8"), kits=_kits(), path=path)
+    after = parse_places(text.encode("utf-8"), path=path)
 
     # The edit changed this place's three fields and nothing else.
     place = after.get(place_id)
@@ -100,15 +100,12 @@ def mark(
     return place
 
 
-def _kits() -> dict[str, frozenset[str]]:
-    return {biome: kit.names for biome, kit in BIOMES.items()}
-
-
 def _describe(place: Place) -> str:
     water = "no water" if place.water == "none" else f"{place.water} {place.water_relation}"
     season = f", {place.season}" if place.season else ""
+    props = ", ".join(name for name, _ in place.props)
     return (f"{place.setting}, {place.landform} {place.position}, {water}, {place.vegetation}"
-            f"{season}, {place.biome} ({place.status})")
+            f"{season}, {place.biome}; {props} ({place.status})")
 
 
 def main(argv: list[str] | None = None) -> int:
