@@ -235,6 +235,7 @@ baseline. The full reasoning is the docstring of
 | `archetype`, `biome` | The place's |
 | `terrain.landform`, `position`, `water_relation`, `vegetation`, `season` | The place's. `season` only where the place has one (`snow_hollow`: winter), else `null` |
 | `terrain.grass` | The season's row of `SEASON_GRASS` (a copy of Unity's `GrassLook` table) where the place has a season; `null` for summer or no season, so Unity uses its own table |
+| `terrain.textures` | The season's `TEXTURE_RULES` (spring flowers, autumn leaves, winter `Snow` 1.0), only for textures the place's ground paints and only where the share differs from the ground's own in the catalogue; `null` when nothing does (summer, no season) |
 | `terrain.water.kind` | The place's. `present` agrees with it |
 | `terrain.spawn.facing_deg` | A low sun is faced; at night, the moon; by day the sun stands 60–120° to one side |
 | `terrain.spawn.placement` | `null`: `terrain.position` says where the participant sits, and Unity reads the facing with it |

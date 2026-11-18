@@ -2,7 +2,7 @@
 
 A hand copy of what the Unity project (UnityRelaxVR) builds from:
 
-    Assets/Catalogue/AssetCatalogue_v1.asset      props and grounds
+    Assets/Catalogue/AssetCatalogue_v1.asset      props, grounds and their textures
     Assets/Catalogue/Settings/<Name>.asset         the settings, one per archetype
     Composition/SettingProfile.cs                  what a setting holds
     Composition/EnvironmentRules.cs                May / Must / Never per setting
@@ -112,6 +112,17 @@ class Catalogue:
     props: frozenset[str]
     grounds: frozenset[str]
     archetypes: dict[str, Setting]
+    # Per ground, the textures it paints over its base (its overlays), by the
+    # terrain layer's name, each with the share of its ground it covers
+    # (zone.coverage). A spec's terrain.textures redraws these. The base
+    # texture and the path textures have no share; Snow (SNOW_TEXTURE) is on
+    # every ground and is not listed here.
+    ground_textures: dict[str, dict[str, float]]
+
+
+# The land's snow: a texture name in terrain.textures on any ground. None of
+# it unless the season (winter) or the spec lays it.
+SNOW_TEXTURE = "Snow"
 
 
 # The single source for every catalogue name a spec may carry.
@@ -180,6 +191,22 @@ CATALOGUE_V1 = Catalogue(
             woods_arc_deg=180.0, woods_density=1.2, clearing_m=(0.0, 0.0), fog_floor=0.0,
             rules=EnvironmentRules(sea="must", river="never", lake="never"),
         ),
+    },
+    # In the order of each ground's overlays. Mud (moss_rock_mix) and
+    # Mud_Pebbles (dry_meadow) have two rules each, with the same share; a
+    # spec's share redraws both.
+    ground_textures={
+        "moss_rock_mix": {
+            "Grass_Light": 0.35, "Grass_Flower": 0.25, "Grass_Lieves_1": 0.12,
+            "Grass_Lieves_2": 0.10, "Mud_Lieves_2": 0.06, "Mud": 1.0, "Rockwall": 0.6,
+            "RockSmooth_20x20": 1.0, "Grass_Pebbles": 0.5, "Sand_Peddles": 0.55,
+        },
+        "dry_meadow": {
+            "Grass": 0.4, "Mud_Pebbles": 1.0, "RockSmooth_20x20": 1.0, "Grass_Pebbles": 0.5,
+            "Mud": 1.0,
+        },
+        "sand_grass_mix": {"Sand_Peddles": 1.0, "Grass_Light": 0.6, "Grass": 0.5, "Rockwall": 1.0},
+        "alpine_rock": {"Mud_Pebbles": 0.7, "RockSmooth_20x20": 1.0, "Rockwall": 1.0},
     },
 )
 

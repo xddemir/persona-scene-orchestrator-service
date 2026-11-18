@@ -28,7 +28,13 @@ from scene_orchestrator.axes import (
     WATER_TABLE,
     setting_problems,
 )
-from scene_orchestrator.catalogue import CATALOGUE_V1, RESERVED_PROPS, EnvironmentRules, Need
+from scene_orchestrator.catalogue import (
+    CATALOGUE_V1,
+    RESERVED_PROPS,
+    SNOW_TEXTURE,
+    EnvironmentRules,
+    Need,
+)
 from scene_orchestrator.mapping.rule_mapper import LINEAR_RULES, PLACES
 from scene_orchestrator.models import (
     Landform,
@@ -94,6 +100,27 @@ PLACING_PROPS_V1 = {
     "pine_large", "pine_medium", "grass_tuft", "bush", "water_lily", "boulder",
     "rock_small", "rock_cluster",
 }
+
+
+# From AssetCatalogue_v1.asset's materials on 2026-11-18: each ground's
+# overlays, by layer name, with their zone.coverage.
+GROUND_TEXTURES_V1 = {
+    "moss_rock_mix": {
+        "Grass_Light": 0.35, "Grass_Flower": 0.25, "Grass_Lieves_1": 0.12, "Grass_Lieves_2": 0.10,
+        "Mud_Lieves_2": 0.06, "Mud": 1.0, "Rockwall": 0.6, "RockSmooth_20x20": 1.0,
+        "Grass_Pebbles": 0.5, "Sand_Peddles": 0.55,
+    },
+    "dry_meadow": {"Grass": 0.4, "Mud_Pebbles": 1.0, "RockSmooth_20x20": 1.0,
+                   "Grass_Pebbles": 0.5, "Mud": 1.0},
+    "sand_grass_mix": {"Sand_Peddles": 1.0, "Grass_Light": 0.6, "Grass": 0.5, "Rockwall": 1.0},
+    "alpine_rock": {"Mud_Pebbles": 0.7, "RockSmooth_20x20": 1.0, "Rockwall": 1.0},
+}
+
+
+def test_the_ground_textures_are_pinned():
+    assert CATALOGUE_V1.ground_textures == GROUND_TEXTURES_V1
+    assert set(CATALOGUE_V1.ground_textures) == CATALOGUE_V1.grounds
+    assert all(SNOW_TEXTURE not in shares for shares in GROUND_TEXTURES_V1.values())
 
 
 def _fields(setting) -> dict[str, Any]:
@@ -314,6 +341,31 @@ def test_every_places_props_focal_and_framing_place_something_in_unity():
 @needs_unity
 def test_the_grounds_match_unitys():
     assert {m["name"] for m in _catalogue()["materials"]} == CATALOGUE_V1.grounds
+
+
+def _terrain_layer_names() -> dict[str, str]:
+    """Every terrain layer in the project, guid -> name (from its .meta)."""
+    names = {}
+    for meta in (UNITY / "Assets").rglob("*.terrainlayer.meta"):
+        guid = re.search(r"^guid: (\w+)", meta.read_text(encoding="utf-8"), re.M)
+        if guid:
+            names[guid.group(1)] = meta.name.removesuffix(".terrainlayer.meta")
+    return names
+
+
+@needs_unity
+def test_the_ground_textures_match_unitys():
+    """Each ground's overlays and their shares; a texture with two rules has
+    one share (a spec's share redraws both). Every ground has the snow layer."""
+    layers = _terrain_layer_names()
+    for material in _catalogue()["materials"]:
+        shares: dict[str, float] = {}
+        for overlay in material.get("overlays") or []:
+            name = layers[overlay["layer"]["guid"]]
+            share = overlay["zone"]["coverage"]
+            assert shares.setdefault(name, share) == share, (material["name"], name)
+        assert shares == pytest.approx(CATALOGUE_V1.ground_textures[material["name"]]), material["name"]
+        assert layers[material["snowLayer"]["guid"]] == SNOW_TEXTURE, material["name"]
 
 
 def _cs_table(source: str, name: str) -> dict[str, list[tuple[str, str] | None]]:

@@ -58,7 +58,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..axes import LANDFORMS, POSITIONS, SPAWN_TABLE, WATER_TABLE, axis_space
-from ..catalogue import CATALOGUE_V1, RESERVED_PROPS, Catalogue, Setting  # noqa: F401  (re-exported)
+from ..catalogue import (  # noqa: F401  (re-exported)
+    CATALOGUE_V1,
+    RESERVED_PROPS,
+    SNOW_TEXTURE,
+    Catalogue,
+    Setting,
+)
 from ..models import (
     Activity,
     Anchor,
@@ -76,6 +82,7 @@ from ..models import (
     Spatial,
     Spawn,
     Terrain,
+    TextureCover,
     TimeOfDay,
     Traits,
     Water,
@@ -374,6 +381,34 @@ SEASON_GRASS: dict[str, Grass | None] = {
     ),
 }
 
+# -- the ground's textures, by season ---------------------------------------
+
+
+@dataclass(frozen=True)
+class TextureRule:
+    season: str
+    texture: str  # a terrain layer's name, or SNOW_TEXTURE
+    cover: float  # its share of the ground its paint rule allows it, 0..1
+    rationale: str
+
+
+# terrain.textures: what the season does to the ground's paint. Only the
+# season decides; no trait does (the persona already sets how much grass and
+# how many flowers grow, through Unity's ground cover). A rule is sent only
+# where the scene's ground paints that texture (Snow: every ground), and only
+# when its cover differs from that ground's own share in the catalogue
+# (Snow's: 0), so a spec carries exactly what the season changes. Summer
+# changes nothing: the grounds were tuned as summer.
+TEXTURE_RULES: tuple[TextureRule, ...] = (
+    TextureRule("spring", "Grass_Flower", 0.45,
+                "the meadow flowers are out: flowering grass nearly twice the summer share"),
+    TextureRule("autumn", "Grass_Flower", 0.10, "the flowers are over; a few patches linger"),
+    TextureRule("autumn", "Grass_Lieves_1", 0.40, "fallen leaves drift over the grass"),
+    TextureRule("autumn", "Grass_Lieves_2", 0.35, "a second kind of leaf litter, in its own patches"),
+    TextureRule("autumn", "Mud_Lieves_2", 0.20, "leaves settle on the bare, damp ground too"),
+    TextureRule("winter", SNOW_TEXTURE, 1.0, "the whole land lies under snow"),
+)
+
 # -- what each biome sounds like --------------------------------------------
 
 # A biome no longer brings props: each place lists its own (places_v1.yaml).
@@ -598,6 +633,7 @@ def map_persona(
             vegetation=place.vegetation,
             season=place.season,
             grass=SEASON_GRASS[place.season] if place.season else None,
+            textures=_textures(place.season or setting.season, setting.ground),
             water=Water(
                 present=water != "none",
                 motion=_linear("terrain.water.motion", traits) if water != "none" else 0.0,
@@ -735,6 +771,25 @@ def _water_sound(biome: str, kind: str) -> tuple[tuple[str, float], ...]:
     return (WATER_SOUND[kind],)
 
 
+def ground_texture_defaults(ground: str) -> dict[str, float]:
+    """Each texture a ground can be given a share of, with its own: its
+    overlays' (the catalogue's), and the land's snow, none."""
+    return {**CATALOGUE_V1.ground_textures[ground], SNOW_TEXTURE: 0.0}
+
+
+def _textures(season: str, ground: str) -> list[TextureCover] | None:
+    """The season's texture rules this ground paints, where they change its
+    own share; None (nothing sent) when none do."""
+    defaults = ground_texture_defaults(ground)
+    covers = [
+        TextureCover(name=rule.texture, cover=rule.cover)
+        for rule in TEXTURE_RULES
+        if rule.season == season and rule.texture in defaults
+        and rule.cover != defaults[rule.texture]
+    ]
+    return covers or None
+
+
 def _procedural_sky(
     biome: str, traits: Traits, cloud_offset: tuple[float, float]
 ) -> ProceduralSky:
@@ -824,6 +879,7 @@ def rules_markdown() -> str:
         ("Prop distribution (conscientiousness)", _distribution_table()),
         ("Props per place", _place_props_table()),
         ("Grass by season (`terrain.grass`)", _grass_table()),
+        ("Ground textures by season (`terrain.textures`)", _texture_table()),
         ("Biome sounds", _sound_table()),
     )
     return "\n\n".join(f"### {title}\n\n{table}" for title, table in sections)
@@ -869,6 +925,24 @@ def _grass_table() -> str:
         ("Season", "Healthy colour", "Dry colour", "Width / height", "Grass", "Flowers",
          "Noise spread"),
         rows,
+    )
+
+
+def _texture_table() -> str:
+    def grounds(texture: str) -> str:
+        if texture == SNOW_TEXTURE:
+            return f"every ground ({SNOW_TEXTURE} 0)"
+        return ", ".join(f"{ground} ({shares[texture]:g})"
+                         for ground, shares in CATALOGUE_V1.ground_textures.items()
+                         if texture in shares) or "none"
+
+    note = ("Sent only where the scene's ground paints the texture, and only when the cover "
+            "differs from that ground's own share (in brackets); summer sends none. No trait "
+            "takes part.")
+    return note + "\n\n" + _table(
+        ("Season", "Texture", "Cover", "Grounds that paint it (own share)", "Rationale"),
+        ((r.season, r.texture, f"{r.cover:g}", grounds(r.texture), r.rationale)
+         for r in TEXTURE_RULES),
     )
 
 

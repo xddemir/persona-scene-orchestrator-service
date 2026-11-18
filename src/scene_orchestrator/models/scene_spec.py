@@ -187,6 +187,20 @@ class Grass(_Strict):
     no_flowers: bool | None = None  # true: no flowers at all
 
 
+class TextureCover(_Strict):
+    """How much of the ground one texture covers: its share of the ground its
+    paint rule allows it (Rockwall only on steep ground, sand only by the
+    water), in patches at full strength. "Snow" is the land's snow, on any
+    ground: 1 all of it, less in patches covering that share."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)  # the mapper shares its table's
+
+    # A terrain layer of the scene's ground, e.g. Grass_Flower; Unity matches
+    # it in any case. No surrounding spaces, which Unity would trim away.
+    name: str = Field(pattern=r"^\S(.*\S)?$")
+    cover: Unit  # 0 none of that ground .. 1 all of it
+
+
 class Terrain(_Strict):
     # The place's axes. Each None: the archetype's setting's. Which
     # combinations Unity builds as they are is checked on SceneSpec, once
@@ -197,6 +211,8 @@ class Terrain(_Strict):
     vegetation: Vegetation | None = None  # every prop count x0.5, x1 or x1.6 in Unity
     season: Season | None = None  # the ground's style for that time of year
     grass: Grass | None = None  # None: Unity's own look for the resolved season
+    # Each texture's share of the ground; one left out keeps the ground's own.
+    textures: list[TextureCover] | None = None
     # None: the archetype's ground. A name Unity doesn't know leaves the
     # terrain bare: no paint, no grass, no rocks.
     ground_material: str | None = None
@@ -209,6 +225,18 @@ class Terrain(_Strict):
     roughness: float | None = Field(default=None, gt=0.0, le=1.0)
     water: Water
     spawn: Spawn
+
+    @model_validator(mode="after")
+    def _one_share_per_texture(self) -> Terrain:
+        # Unity keys the shares by name in any case: a second one would
+        # silently replace the first.
+        seen: set[str] = set()
+        for texture in self.textures or ():
+            key = texture.name.casefold()
+            if key in seen:
+                raise ValueError(f"textures names {texture.name!r} twice (names ignore case)")
+            seen.add(key)
+        return self
 
     @model_validator(mode="after")
     def _facing_is_read(self) -> Terrain:

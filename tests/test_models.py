@@ -307,7 +307,7 @@ def test_overrides_default_to_null_so_unity_uses_the_archetype():
                   terrain["feature_scale_m"], terrain["roughness"], water["distance_m"],
                   water["azimuth_deg"], spec["spatial"]["silhouette_distance_m"],
                   terrain["landform"], terrain["position"], terrain["water_relation"],
-                  terrain["vegetation"], terrain["season"], terrain["grass"],
+                  terrain["vegetation"], terrain["season"], terrain["grass"], terrain["textures"],
                   spec["props"][0]["order"]):
         assert value is None
 
@@ -366,6 +366,50 @@ def test_terrain_without_grass_still_builds():
 def test_bad_grass_is_rejected(field, value):
     with pytest.raises(ValidationError, match=field):
         SceneSpec.model_validate(_with(SPEC, "terrain.grass", {**GRASS, field: value}))
+
+
+# -- the ground's textures (terrain.textures) -------------------------------
+
+TEXTURES = [{"name": "Grass_Lieves_1", "cover": 0.4}, {"name": "Snow", "cover": 1.0},
+            {"name": "Grass_Flower", "cover": 0.0}]
+
+
+def test_valid_textures_build():
+    textures = SceneSpec.model_validate(_with(SPEC, "terrain.textures", TEXTURES)).terrain.textures
+    assert [(t.name, t.cover) for t in textures] == [
+        ("Grass_Lieves_1", 0.4), ("Snow", 1.0), ("Grass_Flower", 0.0)]  # 0 is none of it
+
+
+def test_terrain_without_textures_still_builds():
+    assert "textures" not in SPEC["terrain"]
+    assert SceneSpec.model_validate(SPEC).terrain.textures is None
+    assert SceneSpec.model_validate(_with(SPEC, "terrain.textures", [])).terrain.textures == []
+
+
+@pytest.mark.parametrize(
+    ("texture", "why"),
+    [
+        ({"name": "Snow", "cover": 1.1}, "cover"),
+        ({"name": "Snow", "cover": -0.1}, "cover"),
+        ({"name": "", "cover": 0.5}, "name"),
+        ({"name": "   ", "cover": 0.5}, "name"),
+        ({"name": " Snow", "cover": 0.5}, "name"),  # Unity would trim it
+        ({"name": "Snow"}, "cover"),
+        ({"cover": 0.5}, "name"),
+        ({"name": "Snow", "cover": 0.5, "strength": 1.0}, "strength"),
+    ],
+)
+def test_a_bad_texture_is_rejected(texture, why):
+    with pytest.raises(ValidationError, match=why):
+        SceneSpec.model_validate(_with(SPEC, "terrain.textures", [texture]))
+
+
+@pytest.mark.parametrize("second", ["Grass_Lieves_1", "grass_lieves_1", "GRASS_LIEVES_1"])
+def test_a_texture_named_twice_is_rejected(second):
+    """Unity keys the shares by name in any case: the second would win silently."""
+    textures = [{"name": "Grass_Lieves_1", "cover": 0.4}, {"name": second, "cover": 0.1}]
+    with pytest.raises(ValidationError, match="twice"):
+        SceneSpec.model_validate(_with(SPEC, "terrain.textures", textures))
 
 
 # -- the place's axes (0.4): resolved against the setting, then checked -------

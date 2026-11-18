@@ -32,11 +32,14 @@ from scene_orchestrator.mapping.rule_mapper import (
     RESERVED_PROPS,
     SEASON_GRASS,
     SKY_TINT_SATURATION,
+    SNOW_TEXTURE,
+    TEXTURE_RULES,
     SKY_TINT_VALUE,
     SUNRISE_GLOW,
     SUNSET_GLOW,
     _order,
     _procedural_sky,
+    ground_texture_defaults,
     map_persona,
 )
 from scene_orchestrator.models import MAX_SEED, PersonaProfile, SceneSpec, TimeOfDay, Traits
@@ -760,6 +763,73 @@ def test_the_season_table_is_unitys():
     }
 
 
+# -- the ground's textures, by season ---------------------------------------
+
+
+def _at(place_id: str, season: str | None) -> SceneSpec:
+    """The neutral persona's spec at a place, with its season replaced."""
+    place = PLACES.get(place_id).model_copy(update={"season": season})
+    return map_persona(_persona(), 3, "t", place=place)
+
+
+def _covers(spec: SceneSpec) -> dict[str, float] | None:
+    textures = spec.terrain.textures
+    return None if textures is None else {t.name: t.cover for t in textures}
+
+
+def test_winter_sends_the_whole_land_under_snow():
+    spec = RuleSpecMapper(allow_candidates=True, place_id="snow_hollow").map(_persona(), 3, "t")
+    assert spec.terrain.season == "winter"
+    assert _covers(spec) == {SNOW_TEXTURE: 1.0}
+    # On every ground: each has a snow layer.
+    for place_id in ("forest_lake", "open_meadow", "beach_cove", "summit_top"):
+        assert _covers(_at(place_id, "winter")) == {SNOW_TEXTURE: 1.0}, place_id
+
+
+@pytest.mark.parametrize("place_id", [p.id for p in PLACES.places])
+def test_summer_and_no_season_send_no_textures(place_id):
+    """Summer is the grounds as they were tuned: nothing to change, no snow."""
+    assert _at(place_id, "summer").terrain.textures is None
+    assert _at(place_id, None).terrain.textures is None
+
+
+def test_autumn_lays_leaves_and_spring_brings_flowers_on_the_forest_ground():
+    assert _covers(_at("forest_lake", "autumn")) == {
+        "Grass_Flower": 0.10, "Grass_Lieves_1": 0.40, "Grass_Lieves_2": 0.35, "Mud_Lieves_2": 0.20,
+    }
+    assert _covers(_at("forest_lake", "spring")) == {"Grass_Flower": 0.45}
+
+
+@pytest.mark.parametrize("place_id", ["open_meadow", "beach_cove", "summit_top"])
+def test_a_ground_without_those_textures_gets_none_of_them(place_id):
+    """Unity would only leave them out: the leaves and flowers are moss_rock_mix's."""
+    for season in ("spring", "autumn"):
+        assert _at(place_id, season).terrain.textures is None, season
+
+
+def test_every_texture_sent_is_on_the_ground_and_differs_from_its_share():
+    for place in PLACES.places:
+        ground = CATALOGUE_V1.archetypes[place.setting].ground
+        defaults = ground_texture_defaults(ground)
+        for season in ("spring", "summer", "autumn", "winter"):
+            for texture in _at(place.id, season).terrain.textures or ():
+                assert texture.name in defaults, (place.id, season, texture.name)
+                assert texture.cover != defaults[texture.name], (place.id, season, texture.name)
+
+
+def test_every_texture_rule_reaches_some_ground():
+    """A rule no ground paints, or that only repeats a share, would never be sent."""
+    for rule in TEXTURE_RULES:
+        shares = [ground_texture_defaults(g).get(rule.texture) for g in CATALOGUE_V1.ground_textures]
+        assert any(s is not None and s != rule.cover for s in shares), rule
+        assert 0.0 <= rule.cover <= 1.0 and rule.rationale
+
+
+def test_the_textures_are_deterministic():
+    first = _at("forest_lake", "autumn").model_dump_json()
+    assert _at("forest_lake", "autumn").model_dump_json().encode() == first.encode()
+
+
 # -- against the JSON Schema Unity validates with ---------------------------
 
 SCHEMA = json.loads(
@@ -830,6 +900,11 @@ def test_the_schema_check_catches_bad_grass():
         bad = json.loads(json.dumps(spec))
         bad["terrain"]["grass"][field] = value
         assert _schema_errors(bad, SCHEMA), field
+    for texture in ({"name": "Snow", "cover": 1.5}, {"name": "", "cover": 0.5},
+                    {"name": "Snow"}, {"name": "Snow", "cover": 0.5, "strength": 1}):
+        bad = json.loads(json.dumps(spec))
+        bad["terrain"]["textures"] = [texture]
+        assert _schema_errors(bad, SCHEMA), texture
 
 
 def test_every_place_and_season_passes_the_schema():
@@ -887,3 +962,11 @@ def test_the_grass_table_prints_too():
     assert ("| winter | (0.93, 0.96, 1.00) | (0.78, 0.82, 0.86) | ×0.9 / ×0.6 | ×0.45 | none | – |"
             in tables)
     assert "| spring | (0.55, 0.95, 0.40) | (0.45, 0.80, 0.35) | ×1 / ×0.85 | ×0.9 | ×1.8 | – |" in tables
+
+
+def test_the_texture_table_prints_too():
+    tables = rules_markdown()
+    assert "### Ground textures by season (`terrain.textures`)" in tables
+    assert ("| winter | Snow | 1 | every ground (Snow 0) | the whole land lies under snow |"
+            in tables)
+    assert "| autumn | Grass_Lieves_1 | 0.4 | moss_rock_mix (0.12) |" in tables

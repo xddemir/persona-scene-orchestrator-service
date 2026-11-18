@@ -903,6 +903,21 @@
           ],
           "default": null
         },
+        "textures": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/TextureCover"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Textures"
+        },
         "ground_material": {
           "anyOf": [
             {
@@ -988,6 +1003,29 @@
         "spawn"
       ],
       "title": "Terrain",
+      "type": "object"
+    },
+    "TextureCover": {
+      "additionalProperties": false,
+      "description": "How much of the ground one texture covers: its share of the ground its\npaint rule allows it (Rockwall only on steep ground, sand only by the\nwater), in patches at full strength. \"Snow\" is the land's snow, on any\nground: 1 all of it, less in patches covering that share.",
+      "properties": {
+        "name": {
+          "pattern": "^\\S(.*\\S)?$",
+          "title": "Name",
+          "type": "string"
+        },
+        "cover": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Cover",
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "cover"
+      ],
+      "title": "TextureCover",
       "type": "object"
     },
     "Water": {
