@@ -21,7 +21,9 @@ Every path ends in the manifest. A scene is entered as failed ("did not
 finish") the moment it starts and overwritten when it ends, so even a process
 killed halfway leaves Unity an entry to read rather than a missing one. That
 entry also records the Slurm job once it is submitted, and the next run of the
-scene picks the job up from there instead of submitting it again.
+scene picks the job up from there instead of submitting it again. Once the
+spec is built, the entry also records the mapper's provenance: the place, its
+status, the candidate flag and the hash of the list of places.
 """
 
 from __future__ import annotations
@@ -140,10 +142,13 @@ class ScenePipeline:
             if on_built is not None:
                 on_built(persona, spec)
 
+        def record(provenance: dict[str, Any]) -> None:
+            seen["provenance"] = provenance
+
         try:
             built = self._build(
                 raw_persona, scene_id, seed, sky_mode, pending,
-                on_stage or (lambda _: None), on_progress, remember,
+                on_stage or (lambda _: None), on_progress, remember, record,
             )
         except Exception as exc:  # noqa: BLE001 - whatever it was, it goes in the manifest
             built = _Built("failed", sky_mode, [], _describe(exc))
@@ -154,6 +159,7 @@ class ScenePipeline:
                 self._out_dir, scene_id, status, built.sky_mode, built.files, error,
                 slurm_job_id=built.pending.job_id if built.pending else None,
                 seed=built.pending.seed if built.pending else None,
+                provenance=seen.get("provenance"),
             )
         except Exception as exc:  # noqa: BLE001
             status = "failed"
@@ -170,6 +176,7 @@ class ScenePipeline:
         on_stage: Callable[[str], None],
         on_progress: Callable[[str], None] | None,
         on_built: Callable[[PersonaProfile, SceneSpec], None],
+        record: Callable[[dict[str, Any]], None],
     ) -> _Built:
         on_stage("building_spec")
         persona = self._adapter.adapt(raw_persona)
@@ -181,6 +188,7 @@ class ScenePipeline:
         if seed is None:
             seed = derive_seed(persona.participant_id)
         spec = self._mapper.map(persona, seed, scene_id).model_copy(update={"sky_mode": sky_mode})
+        record(self._mapper.provenance(persona))
         spec = attach_prompt(spec, self._prompts)
         on_built(persona, spec)
 

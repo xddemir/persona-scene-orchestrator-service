@@ -21,6 +21,16 @@ An entry may also carry "slurm_job_id" and "seed": a skybox job that was
 submitted and not seen to finish (the scene is still being generated, the
 process was killed, or the SSH connection dropped). The next run of that scene
 waits for that job instead of submitting another.
+
+Every scene whose spec was built also records where it was placed, so it can
+be shown later which list of places, and which flag, it was made with:
+
+    "place": {"id": "forest_lake", "status": "candidate",
+              "allow_candidates": true, "places_sha256": "3f9a..."}
+
+status is the place's in places_v1.yaml as the server had loaded it, and
+places_sha256 the hash of that file's bytes. A headset review scene
+(place-<id>) also has "forced": true: its place was named, not picked.
 """
 
 from __future__ import annotations
@@ -61,6 +71,7 @@ def update_manifest(
     *,
     slurm_job_id: str | None = None,
     seed: int | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "status": status,
@@ -74,6 +85,8 @@ def update_manifest(
         # The seed says which request the job belongs to.
         entry["slurm_job_id"] = slurm_job_id
         entry["seed"] = seed
+    if provenance:
+        entry.update(provenance)
     with _LOCK:
         manifest = read_manifest(out_dir)
         manifest[scene_id] = entry

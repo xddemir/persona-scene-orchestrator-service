@@ -39,7 +39,7 @@ ssh -NM -o ControlPath=~/.ssh/pegasus.sock demir@login1.pegasus.kl.dfki.de
 ```bash
 cd /mnt/c/Users/Dogukan/persona-scene-orchestrator-service
 source ~/.venvs/scene-orchestrator/bin/activate
-python -m uvicorn scene_orchestrator.api.app:app --reload --reload-dir src --host 127.0.0.1 --port 8001
+python -m uvicorn scene_orchestrator.api.app:app --reload --reload-dir src --reload-include "*.yaml" --host 127.0.0.1 --port 8001
 ```
 
 At startup it reports whether it found the connection:
@@ -55,6 +55,9 @@ Then open <http://127.0.0.1:8001/docs> in the Windows browser.
 - The port is `8001` because image-gen's own dev server uses `8000`.
 - `--reload-dir src` limits the reloader to the source tree. Without it, the reloader also scans the
   `.venv` folder (thousands of files). From WSL on `/mnt/c`, that scan is too slow to notice edits.
+- `--reload-include "*.yaml"` restarts it when a place is marked in
+  [`places_v1.yaml`](src/scene_orchestrator/mapping/places_v1.yaml): the server reads the places once,
+  at start.
 
 ## How a scene is made
 
@@ -89,8 +92,14 @@ persona (file or inline) → ChatbotV2Adapter → RuleSpecMapper → TemplatePro
 ```json
 {"P01": {"status": "ok", "sky_mode": "panorama",
          "files": ["scene_spec.json", "skybox_660120003.png", "skybox_660120003.json"],
-         "updated_at": "2026-10-01T09:03:58Z"}}
+         "updated_at": "2026-10-01T09:03:58Z",
+         "place": {"id": "terraces_foot", "status": "candidate", "allow_candidates": true,
+                   "places_sha256": "024559f6a23d..."}}}
 ```
+
+`place` records where the scene was placed: the place, its status in `places_v1.yaml` as the server
+had loaded it, the `places.allow_candidates` flag, and the SHA-256 of that file. So each
+participant's scene can be traced to the exact list of places and flag it was made with.
 
 `/skyboxes` stays as the low-level way to try a hand-written prompt.
 
@@ -157,7 +166,7 @@ draws them.
 | `lighting.time_of_day` | the sun's elevation, and conscientiousness for the half of the day | see below |
 | `procedural_sky.clouds.coverage` | neuroticism | 0.05 (clear) → 0.95 (overcast) |
 | `weather.precipitation` | neuroticism | none up to 0.7, then rising to steady at 1.0 |
-| `weather.kind` | biome | `snow` in `snowy_valley`, `rain` elsewhere |
+| `weather.kind` | the place's biome | `snow` in `snowy_valley`, `rain` elsewhere |
 | `lighting.moon_phase` | neuroticism | new moon → full moon |
 | `procedural_sky.stars.brightness` | neuroticism | 1.0 → 0.35 |
 | `procedural_sky.stars.density`, `.milky_way` | openness | a few stars → a crowded sky with the Milky Way |
@@ -206,48 +215,73 @@ and draws the moon, the stars and what falls from `lighting` and `weather`. The 
 twinkle with it. Agreeableness drives nothing, as elsewhere. The exact numbers are the `procedural_sky.*`
 entries of `LINEAR_RULES` in [`rule_mapper.py`](src/scene_orchestrator/mapping/rule_mapper.py).
 
-### The land and the view (spec 0.3)
+### The place and the view (spec 0.4)
 
 Unity builds the place itself: the terrain, water, horizon mountains, ground, props, and where the
-participant sits. It has six tuned settings, the **archetypes**. A spec picks one, and the archetype
-fills in every terrain value the spec leaves out.
+participant sits. It has six tuned settings, the **archetypes**. A spec picks one, and sets the
+place's **axes** on it: the landform, where the participant sits on it, the water and where it lies
+from them, how much grows, the season. Whatever the spec leaves out is the archetype's.
+
+The persona chooses **which place**, but only from a fixed list of places, each tuned by hand and
+checked in the headset: [`places_v1.yaml`](src/scene_orchestrator/mapping/places_v1.yaml). It never
+sets a terrain number. Why: shelter mostly comes from the terrain, so with one fixed landscape a
+participant's scene and the yoked one would differ only in light, fog and props (RQ3); and terrain
+numbers driven by the answers give odd in-between landscapes, a confound against the hand-made
+baseline. The full reasoning is the docstring of
+[`rule_mapper.py`](src/scene_orchestrator/mapping/rule_mapper.py).
 
 | Field | What the mapper sends |
 | --- | --- |
-| `archetype` | From the biome and `prospect_refuge_bias` (see below). No seed draw |
-| `catalogue_version` | `"v1"`: the names below are from Unity's asset catalogue v1 |
-| `terrain.spawn.placement` | The archetype's: `basin_floor`, `crest`, `summit`, `centre` or `shore` |
+| `archetype`, `biome` | The place's |
+| `terrain.landform`, `position`, `water_relation`, `vegetation`, `season` | The place's. `season` only where the place has one (`snow_hollow`: winter), else `null` |
+| `terrain.water.kind` | The place's. `present` agrees with it |
 | `terrain.spawn.facing_deg` | A low sun is faced; at night, the moon; by day the sun stands 60–120° to one side |
-| `terrain.water.kind` | The archetype's: `river` (forest), `lake` (meadow), `sea` (beach), else `none`. `present` agrees with it |
+| `terrain.spawn.placement` | `null`: `terrain.position` says where the participant sits, and Unity reads the facing with it |
+| `spatial.prospect_refuge_bias` | From the place's `shelter_level`: 4–5 refuge, 1–2 prospect, 3 balanced |
+| `props` | The first 2–5 of the biome's kit (openness); `order` from conscientiousness, sent only with `ringed` |
 | `focal` | The prop the view is composed around, straight ahead: 40 m away when calm, 25 m when anxious |
 | `framing` | The biome's tree (or a rock cluster) 4 m away, 55–80° to one side, at the edge of view |
-| `terrain.ground_material`, `macro_shape`, `amplitude_m`, `feature_scale_m`, `roughness`, `water.distance_m`, `water.azimuth_deg`, `spatial.silhouette_distance_m` | `null`: the archetype's. Set them only for experiments |
+| `terrain.ground_material`, `macro_shape`, `amplitude_m`, `feature_scale_m`, `roughness`, `water.distance_m`, `water.azimuth_deg`, `spatial.silhouette_distance_m` | Never sent (`null`): the archetype's. For experiments by hand only |
 
-| Biome | refuge | balanced | prospect |
-| --- | --- | --- | --- |
-| open_meadow | hollow | meadow | overlook |
-| forest_clearing, birch_grove | hollow | forest | overlook |
-| lakeside | forest | meadow | meadow |
-| coastal_pine | forest | beach | beach |
-| rocky_shore | beach | beach | beach |
-| alpine_basin | hollow | overlook | summit |
-| snowy_valley | hollow | hollow | summit |
+**The pick rule** (`pick_place`, no seed): shelter (today neuroticism) gives a target band,
+1 + 4 × shelter rounded half up. The band used is the nearest `shelter_level` with a usable place,
+the more sheltered on a tie. In it, the place whose `novelty` is nearest the persona's (today
+openness); on a tie, the first in the list. Usable means `verified`, plus `candidate` while
+`places.allow_candidates` is true; `rejected` never.
 
+| Shelter | Places (novelty) |
+| --- | --- |
+| 5 | forest_lake (0.2), hollow_pond (0.4), snow_hollow (0.9) |
+| 4 | forest_river (0.3), valley_stream (0.5), terraces_foot (0.8) |
+| 3 | meadow_lake (0.1), beach_cove (0.4), valley_lake_view (0.5) |
+| 2 | open_meadow (0.0), ridge_lake_below (0.5), rocky_shore_top (0.8) |
+| 1 | overlook_crest (0.3), cliff_over_sea (0.7), summit_top (0.9) |
+
+- A spec whose axes Unity would change (a plain with water below, a lake at the summit, the top of a
+  valley) is rejected by `SceneSpec`, after each axis is resolved against the archetype's setting.
+  The places are checked the same way when they load. The tables are copies of Unity's
+  `SceneAxes` and `EnvironmentRules` ([`axes.py`](src/scene_orchestrator/axes.py)).
 - Unity reads a missing or `null` number as 0 and a missing string as `""`, and both mean "the
   archetype's". So 0 can't be asked for, and the override fields reject it.
-- The fog is capped outside a hollow, so about a third of the horizon mountains still shows
-  (`FOG_CAP`, from each archetype's horizon distance). In a hollow the fog still follows neuroticism.
+- The fog is capped where horizon mountains stand, so about a third of them still shows
+  (`FOG_CAP` = 1.1 / horizon distance). Not in a hollow, where the fog is the shelter, nor in the
+  forest, which has no mountains. It never goes below an archetype's fog floor (the forest's 0.02),
+  which Unity would raise it to anyway.
 - The water's sound follows its kind: a stream with a river, lapping with a lake, waves at the sea.
-- The skybox prompt names the view (e.g. "seen from a high mountain top", "a beach, the sea toward
-  the setting sun"), so the painted horizon agrees with the land.
-- Props, the focal and the framing use only catalogue names (`CATALOGUE_V1`). `mountain` and
-  `cliff` are never sent: Unity places them itself.
-- Unity builds only the `poisson` and `clustered` distributions so far. Until it builds the others,
-  `scattered` is sent as `poisson` and `ringed` as `clustered`.
-- The new seed draws come after all the earlier ones, so a participant's sun, wind, clouds and moon
-  are the same as in 0.2.
+- The skybox prompt names the view from the place's landform and position (e.g. "seen from the foot
+  of a terraced mountain") and its water from the kind and relation ("a lake far below"), so the
+  painted horizon agrees with the land.
+- Props, the focal and the framing use only catalogue names that place something in Unity
+  ([`catalogue.py`](src/scene_orchestrator/catalogue.py)). `mountain`, `cliff` and `road_rocks`
+  are never sent: Unity places them itself.
+- Unity builds `poisson`, `clustered` and `ringed`. Until it builds `scattered`, that is sent as
+  `poisson`.
+- The seed only decides where and which way: the sun's, moon's and wind's azimuths, the moon's
+  elevation, the clouds' offset, and which side (and how far) the day's sun and the framing prop
+  stand. The list is in `map_persona`'s docstring.
 
-`rules_markdown()` prints all of these rules as tables for the thesis.
+`rules_markdown()` prints all of these rules as tables for the thesis: the linear rules, the places,
+the pick rule, and every axis combination Unity can build (369, of which the places use 15).
 
 ## Many participants at once
 
@@ -315,6 +349,10 @@ from when Unity asks for them, and the sky mode of a scene nobody created yet. I
 fixtures; for the study, point it at the chatbot's output. Without the block, an unknown
 participant is a 404 and no scene is built again.
 
+Its `places` block says whether places not yet checked in the headset may be used
+(`allow_candidates`). It is `true` while the places are being checked; set it to `false` for the
+study, so every participant is at a verified place. Without the block it is `false`.
+
 ## Output
 
 ```text
@@ -330,8 +368,14 @@ was made on Pegasus) and `slurm_job_id`. A failed skybox writes no files.
 ## Data contracts
 
 [`models/`](src/scene_orchestrator/models/) holds the Pydantic models: `PersonaProfile` (Big Five
-traits, 0..1) as input and `SceneSpec` as output. Every numeric field in `SceneSpec` is
-range-constrained, and unknown fields and biomes are rejected.
+traits, 0..1) as input and `SceneSpec` (0.4) as output. Every numeric field in `SceneSpec` is
+range-constrained, unknown fields and biomes are rejected, and so is a combination of terrain axes
+Unity would change.
+
+[`catalogue.py`](src/scene_orchestrator/catalogue.py) and [`axes.py`](src/scene_orchestrator/axes.py)
+are hand copies of Unity's catalogue, settings and axis tables. `tests/test_catalogue.py` pins their
+numbers, and compares them with the Unity project's own files when it finds the project (set
+`UNITY_PROJECT` to the `UnityRelaxVR` folder; in WSL, its `/mnt/c/...` path).
 
 Unity validates scene files against [`schema/scene_spec.schema.json`](schema/scene_spec.schema.json).
 Regenerate it after changing `scene_spec.py`:
@@ -389,28 +433,52 @@ yourself.
    `"status": "ready"`, `"sky_mode": "procedural"` and `"files": ["scene_spec.json"]`.
 5. **Fetch in Unity:** open `Assets/Scenes/BasicScene.unity`, press Play, type `P01`, press
    **Fetch**. The experiment scene loads by itself.
-6. **Confirm:** the Console has a line starting `[SceneBuilder] P01: snowy_valley, sky: procedural`.
+6. **Confirm:** the Console has a line starting `[SceneBuilder] P01: alpine_basin, sky: procedural`.
    The sky is drawn, not a photo: for P01 a mostly cloudy dawn, with a rose glow where the sun is
-   about to rise and slowly drifting clouds.
+   about to rise and slowly drifting clouds, seen from the foot of the terraced mountain.
 
-The fixtures between them show every kind of sky:
+The fixtures between them show every kind of sky, at places in all five shelter bands:
 
-| Participant | Sky | Biome | Archetype |
+| Participant | Sky | Place (shelter) | Biome |
 | --- | --- | --- | --- |
-| P01 | Mostly cloudy dawn, the sun just under the horizon | snowy valley | hollow |
-| P02 | Sunny midday, a few clouds | birch grove | overlook |
-| P04 | Moonless night crowded with stars, the Milky Way | alpine basin | summit |
-| P05 | Cloudless midday | wildflower meadow | overlook |
-| P06 | Rain at night, a full moon behind the cloud | coastal pines | forest (river) |
-| P07 | Snowfall at midday | snowy valley | hollow |
-| P08 | Sunrise, scattered clouds | lakeside | meadow (lake) |
-| P09 | Dusk after sunset, a thin crescent and the first stars | alpine basin | summit |
-| P10 | Night, a half moon, scattered clouds, a few stars | wildflower meadow | meadow (lake) |
-| P11 | Clear sunset | coastal pines | beach, facing the sunset |
-| P12 | Rainy morning | forest clearing | hollow |
-| P13 | Mostly cloudy afternoon | rocky shore | beach |
+| P01 | Mostly cloudy dawn, the sun just under the horizon | terraces_foot (4) | alpine basin |
+| P02 | Sunny midday, a few clouds | ridge_lake_below (2) | wildflower meadow |
+| P04 | Moonless night crowded with stars, the Milky Way | summit_top (1) | alpine basin |
+| P05 | Cloudless midday | overlook_crest (1) | wildflower meadow |
+| P06 | Rain at night, a full moon behind the cloud | hollow_pond (5) | birch grove |
+| P07 | Snowfall at midday | snow_hollow (5) | snowy valley |
+| P08 | Sunrise, scattered clouds | valley_lake_view (3) | lakeside |
+| P09 | Dusk after sunset, a thin crescent and the first stars | rocky_shore_top (2) | rocky shore |
+| P10 | Night, a half moon, scattered clouds, a few stars | meadow_lake (3) | lakeside |
+| P11 | Clear sunset | ridge_lake_below (2) | wildflower meadow |
+| P12 | Rainy morning | forest_lake (5) | forest clearing |
+| P13 | Mostly cloudy afternoon | terraces_foot (4) | alpine basin |
 
 P03 is missing a dimension on purpose: its scene fails, with the reason.
+
+### Checking the places in the headset
+
+Every place in [`places_v1.yaml`](src/scene_orchestrator/mapping/places_v1.yaml) starts as a
+`candidate`. To look at one, build its review scene: the place forced, a neutral persona (every trait
+0.5), seed 0, the procedural sky. It is registered like a participant's scene, as `place-<id>`.
+
+```bash
+python -m scene_orchestrator.places review                      # all of them
+python -m scene_orchestrator.places review --place forest_lake  # one
+```
+
+In Unity, type `place-forest_lake` as the participant number and press **Fetch** (the server must be
+running; it answers `GET /scenes/place-forest_lake` from `out/`). After looking:
+
+```bash
+python -m scene_orchestrator.places mark forest_lake verified --note "reads as a lake in the woods"
+python -m scene_orchestrator.places mark summit_top rejected --note "the top's edge floats"
+```
+
+`mark` sets the place's `status`, `checked` (today) and `note`, and leaves the rest of the file as
+it was. The server picks the change up when it restarts (or by itself, with
+`--reload-include "*.yaml"`). For the study, set `places.allow_candidates: false` in the config, so
+only verified places are used.
 
 ### Generated sky (needs the VPN and the cluster)
 

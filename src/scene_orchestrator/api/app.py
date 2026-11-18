@@ -1,10 +1,11 @@
 """FastAPI app.
 
-    uvicorn scene_orchestrator.api.app:app --reload --reload-dir src --host 127.0.0.1 --port 8001
+    uvicorn scene_orchestrator.api.app:app --reload --reload-dir src --reload-include "*.yaml" --host 127.0.0.1 --port 8001
 
 Run it in WSL: skyboxes are Slurm jobs submitted over a shared SSH connection
 to Pegasus, which Windows' ssh cannot provide. Port 8001 because image-gen's
-own dev server uses 8000.
+own dev server uses 8000. The places (mapping/places_v1.yaml) are read once,
+at start: --reload-include "*.yaml" restarts the server when one is marked.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from ..adapters import ChatbotV2Adapter, PersonaAdapterError
 from ..clients.image_gen import SkyboxRequest, SlurmImageGenClient
 from ..config import AppConfig, load_config
 from ..manifest import read_manifest
+from ..mapping import RuleSpecMapper
 from ..models import SceneSpec
 from ..outputs import relative_to_out, scene_dir, scene_spec_path, seconds_since
 from ..pipeline import UNFINISHED, ScenePipeline, scene_id_for
@@ -66,7 +68,8 @@ def create_app(
     client = image_gen or SlurmImageGenClient(config.image_gen)
     runner = JobRunner(client, config.out_dir)
     adapter = ChatbotV2Adapter()
-    scenes = SceneRunner(ScenePipeline(client, config.out_dir, adapter=adapter))
+    mapper = RuleSpecMapper(allow_candidates=config.places.allow_candidates)
+    scenes = SceneRunner(ScenePipeline(client, config.out_dir, adapter=adapter, mapper=mapper))
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

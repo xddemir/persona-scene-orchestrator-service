@@ -386,6 +386,20 @@
           ],
           "default": null,
           "title": "Cluster Count"
+        },
+        "order": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Order"
         }
       },
       "required": [
@@ -603,18 +617,26 @@
     },
     "Spawn": {
       "additionalProperties": false,
-      "description": "Where the participant sits and which way they look. Unity reads\nfacing_deg only when placement is set, so both are required.",
+      "description": "Which way the participant looks, and in older specs where they sit.\n\nUnity reads facing_deg only when the spec says where the participant sits:\nterrain.position, or placement here. terrain.position wins over placement,\nso placement is None whenever position is set.",
       "properties": {
         "placement": {
-          "enum": [
-            "centre",
-            "basin_floor",
-            "crest",
-            "summit",
-            "shore"
+          "anyOf": [
+            {
+              "enum": [
+                "centre",
+                "basin_floor",
+                "crest",
+                "summit",
+                "shore"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "title": "Placement",
-          "type": "string"
+          "default": null,
+          "title": "Placement"
         },
         "facing_deg": {
           "maximum": 360.0,
@@ -624,7 +646,6 @@
         }
       },
       "required": [
-        "placement",
         "facing_deg"
       ],
       "title": "Spawn",
@@ -633,15 +654,96 @@
     "Terrain": {
       "additionalProperties": false,
       "properties": {
-        "profile": {
-          "enum": [
-            "flat",
-            "gentle_slope",
-            "rolling",
-            "basin"
+        "landform": {
+          "anyOf": [
+            {
+              "enum": [
+                "plain",
+                "bowl",
+                "ridge",
+                "peak",
+                "shore",
+                "terraces",
+                "valley"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "title": "Profile",
-          "type": "string"
+          "default": null,
+          "title": "Landform"
+        },
+        "position": {
+          "anyOf": [
+            {
+              "enum": [
+                "bottom",
+                "mid",
+                "top"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Position"
+        },
+        "water_relation": {
+          "anyOf": [
+            {
+              "enum": [
+                "absent",
+                "beside",
+                "below",
+                "distant"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Water Relation"
+        },
+        "vegetation": {
+          "anyOf": [
+            {
+              "enum": [
+                "sparse",
+                "moderate",
+                "dense"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vegetation"
+        },
+        "season": {
+          "anyOf": [
+            {
+              "enum": [
+                "spring",
+                "summer",
+                "autumn",
+                "winter"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Season"
         },
         "ground_material": {
           "anyOf": [
@@ -664,7 +766,8 @@
                 "ridge",
                 "peak",
                 "shore",
-                "terraces"
+                "terraces",
+                "valley"
               ],
               "type": "string"
             },
@@ -723,7 +826,6 @@
         }
       },
       "required": [
-        "profile",
         "water",
         "spawn"
       ],
@@ -732,7 +834,7 @@
     },
     "Water": {
       "additionalProperties": false,
-      "description": "Unity goes by `kind`; `present` says the same thing, for older readers.",
+      "description": "Unity goes by `kind`; `present` says the same thing, for older readers.\nWhere it lies from the participant is terrain.water_relation.",
       "properties": {
         "present": {
           "title": "Present",
@@ -819,7 +921,7 @@
   "additionalProperties": false,
   "properties": {
     "spec_version": {
-      "default": "0.3",
+      "default": "0.4",
       "title": "Spec Version",
       "type": "string"
     },

@@ -58,3 +58,22 @@ def test_missing_settings_are_named(tmp_path):
 def test_missing_file_says_where_it_looked(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "nope.yaml")
+
+
+def test_default_config_allows_candidates_while_places_are_checked():
+    assert load_config(CONFIGS / "default.yaml").places.allow_candidates is True
+
+
+def test_without_a_places_block_only_verified_places_are_used(tmp_path):
+    """The study's setting is the safe default."""
+    assert load_config(_write(tmp_path, PEGASUS)).places.allow_candidates is False
+
+
+def test_a_misspelt_places_flag_is_rejected(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump({"image_gen": PEGASUS, "places": {"allow_candidate": True}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="allow_candidate"):
+        load_config(path)

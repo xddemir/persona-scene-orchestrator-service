@@ -49,7 +49,6 @@ SPEC = {
                    "banding": 0.3, "offset": [12.5, 80.0]},
     },
     "terrain": {
-        "profile": "gentle_slope",
         "water": {"present": True, "motion": 0.2, "kind": "river"},
         "spawn": {"placement": "centre", "facing_deg": 185},
     },
@@ -116,7 +115,7 @@ def test_an_invalid_persona_is_rejected(field, value):
 
 def test_a_valid_scene_spec_builds():
     spec = SceneSpec.model_validate(SPEC)
-    assert spec.spec_version == "0.3"
+    assert spec.spec_version == "0.4"
     assert spec.catalogue_version == "v1"
     assert spec.skybox.projection == "equirect"
     assert spec.skybox.resolution == (2048, 1024)
@@ -256,6 +255,11 @@ def test_an_unknown_biome_is_rejected():
         ("terrain.spawn.placement", "cave"),
         ("terrain.macro_shape", "volcano"),
         ("terrain.water.kind", "pond"),
+        ("terrain.landform", "volcano"),
+        ("terrain.position", "middle"),
+        ("terrain.water_relation", "under"),
+        ("terrain.vegetation", "lush"),
+        ("terrain.season", "fall"),
     ],
 )
 def test_names_unity_does_not_build_are_rejected(field, value):
@@ -269,7 +273,8 @@ def test_names_unity_does_not_build_are_rejected(field, value):
      ("terrain.spawn", "placement"), ("terrain.water", "kind")],
 )
 def test_a_spec_without_its_land_or_view_is_rejected(section, field):
-    """Unity reads the facing only with a placement, so neither is optional."""
+    """Unity reads the facing only with a position or a placement: SPEC has
+    no position, so its placement can't go."""
     spec = copy.deepcopy(SPEC)
     target = spec
     for key in section.split(".") if section else ():
@@ -300,8 +305,109 @@ def test_overrides_default_to_null_so_unity_uses_the_archetype():
     terrain, water = spec["terrain"], spec["terrain"]["water"]
     for value in (terrain["ground_material"], terrain["macro_shape"], terrain["amplitude_m"],
                   terrain["feature_scale_m"], terrain["roughness"], water["distance_m"],
-                  water["azimuth_deg"], spec["spatial"]["silhouette_distance_m"]):
+                  water["azimuth_deg"], spec["spatial"]["silhouette_distance_m"],
+                  terrain["landform"], terrain["position"], terrain["water_relation"],
+                  terrain["vegetation"], terrain["season"], spec["props"][0]["order"]):
         assert value is None
+
+
+def test_terrain_profile_is_gone():
+    """Unity stopped reading it; 0.4 dropped it."""
+    with pytest.raises(ValidationError, match="profile"):
+        SceneSpec.model_validate(_with(SPEC, "terrain.profile", "gentle_slope"))
+
+
+# -- the place's axes (0.4): resolved against the setting, then checked -------
+
+
+def _terrain(spec: dict, **fields) -> dict:
+    """`spec` with these terrain fields; water is a kind, placement the spawn's."""
+    spec = copy.deepcopy(spec)
+    for name, value in fields.items():
+        if name == "water":
+            spec["terrain"]["water"] = {
+                "present": value != "none", "motion": 0.2 if value != "none" else 0.0,
+                "kind": value,
+            }
+        elif name == "placement":
+            spec["terrain"]["spawn"]["placement"] = value
+        else:
+            spec["terrain"][name] = value
+    return spec
+
+
+@pytest.mark.parametrize(
+    ("archetype", "fields", "why"),
+    [
+        # The setting's landform meets the spec's relation: a forest is a plain.
+        ("forest", {"water_relation": "below"},
+         r"plain \+ water below: a plain has nothing to fall from \(Unity would use distant\)"),
+        ("hollow", {"water": "lake", "water_relation": "below"}, r"bowl \+ water below"),
+        ("forest", {"water": "none", "water_relation": "beside"}, "with no water"),
+        ("forest", {"water": "lake", "water_relation": "absent"}, "with water_relation absent"),
+        # A hollow has no water of its own, so a water it is given needs its relation.
+        ("hollow", {"water": "river"}, "with water_relation absent"),
+        ("summit", {"water": "lake", "water_relation": "beside"}, "a summit never has a lake"),
+        ("beach", {"water": "none", "water_relation": "absent"}, "a beach always has the sea"),
+        ("beach", {"water": "lake"}, "a beach never has a lake"),
+        ("meadow", {"water": "sea"}, "a meadow never has the sea"),
+        ("forest", {"position": "top"}, r"plain \+ position top: a plain has no top or bottom"),
+        ("forest", {"placement": "crest"}, r"plain \+ position top"),  # the older name
+        ("hollow", {"landform": "valley", "position": "top", "placement": None},
+         "the top of a valley is not a valley"),
+        ("beach", {"water": "sea", "position": "bottom"}, "a shore's lowest ground is under the sea"),
+        ("beach", {"water": "sea", "water_relation": "below"}, "the shore is the waterline"),
+        ("overlook", {"water": "lake", "landform": "terraces", "water_relation": "beside"},
+         "the terraced mountain stands on dry land"),
+    ],
+)
+def test_axes_unity_would_change_are_rejected(archetype, fields, why):
+    spec = _terrain({**SPEC, "archetype": archetype}, **fields)
+    with pytest.raises(ValidationError, match=why):
+        SceneSpec.model_validate(spec)
+
+
+@pytest.mark.parametrize(
+    ("archetype", "fields"),
+    [
+        ("forest", {"landform": "ridge", "water_relation": "below"}),  # a ridge has an edge
+        ("overlook", {"water": "sea", "water_relation": "below", "position": "top",
+                      "placement": None}),
+        ("hollow", {"landform": "valley", "water": "river", "water_relation": "beside",
+                    "position": "bottom", "placement": None}),
+        ("hollow", {"water": "lake", "water_relation": "beside"}),
+        ("meadow", {"landform": "valley", "water_relation": "distant", "water": "lake"}),
+        ("beach", {"water": "sea", "position": "top", "placement": None, "vegetation": "sparse",
+                   "season": "autumn"}),
+        ("summit", {"water": "none", "landform": "terraces", "position": "bottom",
+                    "placement": None, "vegetation": "dense"}),
+        ("forest", {"macro_shape": "valley", "water_relation": "below"}),  # valley is a macro shape too
+    ],
+)
+def test_axes_unity_builds_as_they_are_pass(archetype, fields):
+    SceneSpec.model_validate(_terrain({**SPEC, "archetype": archetype}, **fields))
+
+
+def test_position_wins_over_placement_and_still_carries_the_facing():
+    spec = _terrain(SPEC, position="mid", placement=None)
+    terrain = SceneSpec.model_validate(spec).terrain
+    assert (terrain.position, terrain.spawn.placement, terrain.spawn.facing_deg) == ("mid", None, 185)
+    # With both, the position is what is checked: crest (top) would fail on a plain.
+    SceneSpec.model_validate(_terrain(SPEC, position="mid", placement="crest"))
+
+
+def test_without_position_or_placement_the_facing_would_be_lost():
+    with pytest.raises(ValidationError, match="ignores spawn.facing_deg"):
+        SceneSpec.model_validate(_terrain(SPEC, placement=None))
+
+
+def test_order_is_only_for_rings():
+    ringed = _with(_with(SPEC, "props.0.distribution", "ringed"), "props.0.order", 0.8)
+    assert SceneSpec.model_validate(ringed).props[0].order == 0.8
+    with pytest.raises(ValidationError, match="order is only read for ringed"):
+        SceneSpec.model_validate(_with(SPEC, "props.0.order", 0.8))  # poisson
+    with pytest.raises(ValidationError):
+        SceneSpec.model_validate(_with(ringed, "props.0.order", 1.2))
 
 
 def test_unknown_fields_are_rejected():

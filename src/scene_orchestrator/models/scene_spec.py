@@ -25,6 +25,12 @@ settings in Unity's asset catalogue (`catalogue_version`); the setting gives
 every terrain value the spec leaves out. Unity reads a missing number as 0 and
 a missing string as "", and both mean "the setting's". So the override fields
 below are None by default, and a deliberate 0 can't be expressed.
+
+0.4 adds the place's axes to `terrain` (landform, position, water_relation,
+vegetation, season), each None for the setting's. Unity quietly changes a
+combination of them that makes no sense; this model rejects it instead, after
+resolving every axis against the archetype's setting (axes.py), so a spec on
+disk is what the headset shows.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..axes import axis_problems, resolve_axes
 from ..outputs import SCENE_ID_PATTERN
 
 Unit = Annotated[float, Field(ge=0.0, le=1.0)]
@@ -53,7 +60,15 @@ TimeOfDay = Literal["night", "sunrise", "morning", "midday", "afternoon", "sunse
 PrecipitationKind = Literal["rain", "snow"]
 # The settings in Unity's asset catalogue.
 Archetype = Literal["hollow", "overlook", "summit", "forest", "meadow", "beach"]
-MacroShape = Literal["plain", "bowl", "ridge", "peak", "shore", "terraces"]
+# The place's axes (Unity's SettingProfile.cs enums); axes.py has their tables.
+Landform = Literal["plain", "bowl", "ridge", "peak", "shore", "terraces", "valley"]
+MacroShape = Landform  # the older name Unity still reads; landform wins over it
+Position = Literal["bottom", "mid", "top"]
+WaterRelation = Literal["absent", "beside", "below", "distant"]
+Vegetation = Literal["sparse", "moderate", "dense"]
+Season = Literal["spring", "summer", "autumn", "winter"]
+# The older name for position: basin_floor is bottom; centre and shore are
+# mid; crest and summit are top.
 Placement = Literal["centre", "basin_floor", "crest", "summit", "shore"]
 WaterKind = Literal["river", "lake", "sea", "none"]
 
@@ -116,13 +131,15 @@ class ProceduralSky(_Strict):
 
 
 class Water(_Strict):
-    """Unity goes by `kind`; `present` says the same thing, for older readers."""
+    """Unity goes by `kind`; `present` says the same thing, for older readers.
+    Where it lies from the participant is terrain.water_relation."""
 
     present: bool
     motion: Unit  # not read by Unity yet
     kind: WaterKind
-    # Both None: Unity places the water from the facing (the river and the sea
-    # ahead, the lake to one side). With distance_m, azimuth_deg is absolute.
+    # Both None: Unity places the water by the relation, from the facing (the
+    # setting's own water at its own bearing). With distance_m, azimuth_deg is
+    # absolute. For experiments only: the mapper never sends them.
     distance_m: float | None = Field(default=None, gt=0.0)
     azimuth_deg: Degrees | None = None
 
@@ -136,26 +153,47 @@ class Water(_Strict):
 
 
 class Spawn(_Strict):
-    """Where the participant sits and which way they look. Unity reads
-    facing_deg only when placement is set, so both are required."""
+    """Which way the participant looks, and in older specs where they sit.
 
-    placement: Placement
+    Unity reads facing_deg only when the spec says where the participant sits:
+    terrain.position, or placement here. terrain.position wins over placement,
+    so placement is None whenever position is set.
+    """
+
+    placement: Placement | None = None
     facing_deg: Degrees
 
 
 class Terrain(_Strict):
-    profile: Literal["flat", "gentle_slope", "rolling", "basin"]  # Unity no longer reads it
+    # The place's axes. Each None: the archetype's setting's. Which
+    # combinations Unity builds as they are is checked on SceneSpec, once
+    # every axis is resolved against the setting.
+    landform: Landform | None = None
+    position: Position | None = None  # where on the land the participant sits
+    water_relation: WaterRelation | None = None  # where the water is from them
+    vegetation: Vegetation | None = None  # every prop count x0.5, x1 or x1.6 in Unity
+    season: Season | None = None  # the ground's style for that time of year
     # None: the archetype's ground. A name Unity doesn't know leaves the
     # terrain bare: no paint, no grass, no rocks.
     ground_material: str | None = None
-    # Overrides of the archetype's tuned landform. None in normal output; for
-    # experiments only. 0 would mean "the archetype's", so it is not allowed.
-    macro_shape: MacroShape | None = None
+    # Overrides of the archetype's tuned heightmap. None in normal output; for
+    # experiments only: the mapper never sends them. 0 would mean "the
+    # archetype's", so it is not allowed.
+    macro_shape: MacroShape | None = None  # the older name for landform
     amplitude_m: float | None = Field(default=None, gt=0.0)  # lowest to highest point
     feature_scale_m: float | None = Field(default=None, gt=0.0)  # size of the bumps
     roughness: float | None = Field(default=None, gt=0.0, le=1.0)
     water: Water
     spawn: Spawn
+
+    @model_validator(mode="after")
+    def _facing_is_read(self) -> Terrain:
+        if self.position is None and self.spawn.placement is None:
+            raise ValueError(
+                "give terrain.position (or the older spawn.placement): without one, "
+                "Unity ignores spawn.facing_deg"
+            )
+        return self
 
 
 class Anchor(_Strict):
@@ -168,12 +206,22 @@ class Anchor(_Strict):
 
 class Prop(_Strict):
     asset: str  # a name from the curated Unity asset library
+    # Unity multiplies it by the vegetation's scale when terrain.vegetation is set.
     count: int = Field(ge=0, le=1000)
     distribution: Literal["poisson", "clustered", "ringed", "scattered"]
     min_spacing: float | None = Field(default=None, ge=0.0)
     exclude_radius: float = Field(ge=0.0)
     scale_jitter: Unit | None = None
     cluster_count: int | None = Field(default=None, ge=1)
+    # ringed only: how exactly the props keep to their rings. 1: on them; 0:
+    # each strays up to about a third of a ring step (Unity's PropPlacer).
+    order: Unit | None = None
+
+    @model_validator(mode="after")
+    def _order_is_for_rings(self) -> Prop:
+        if self.order is not None and self.distribution != "ringed":
+            raise ValueError(f"order is only read for ringed, not {self.distribution}")
+        return self
 
 
 class Lighting(_Strict):
@@ -220,7 +268,7 @@ class Activity(_Strict):
 
 
 class SceneSpec(_Strict):
-    spec_version: str = "0.3"
+    spec_version: str = "0.4"
     scene_id: str = Field(pattern=SCENE_ID_PATTERN)  # also the folder under out/
     seed: int = Field(ge=0, le=MAX_SEED)  # drives all procedural placement
     catalogue_version: str = "v1"  # the Unity asset catalogue the names are from
@@ -243,3 +291,26 @@ class SceneSpec(_Strict):
     audio: list[AudioLayer]
     motion: Motion
     activity: Activity
+
+    @model_validator(mode="after")
+    def _unity_builds_the_place_as_given(self) -> SceneSpec:
+        """Resolved first, then checked: a terrain that leaves landform out
+        meets the setting's landform, and that pair is what Unity builds."""
+        terrain = self.terrain
+        axes = resolve_axes(
+            self.archetype,
+            landform=terrain.landform,
+            macro_shape=terrain.macro_shape,
+            position=terrain.position,
+            placement=terrain.spawn.placement,
+            water=terrain.water.kind,
+            water_relation=terrain.water_relation,
+            vegetation=terrain.vegetation,
+            season=terrain.season,
+        )
+        problems = axis_problems(self.archetype, axes)
+        if problems:
+            raise ValueError(
+                f"Unity would not build this {self.archetype} as given: " + "; ".join(problems)
+            )
+        return self

@@ -72,6 +72,18 @@ class AutoCreateConfig(BaseModel):
     sky_mode: SkyMode = "panorama"
 
 
+class PlacesConfig(BaseModel):
+    """Which places of mapping/places_v1.yaml a scene may be at."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Candidates (places not yet checked in the headset) count as usable too.
+    # True while the places are being checked; false for the study, so every
+    # participant's place is a verified one. Rejected places are never used.
+    # Each scene's manifest entry records the value it was made with.
+    allow_candidates: bool = False
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -79,6 +91,8 @@ class AppConfig(BaseModel):
     # Left out: GET /scenes/{id} builds nothing, and a scene nobody created
     # is a 404.
     auto_create: AutoCreateConfig | None = None
+    # Left out: only verified places.
+    places: PlacesConfig = Field(default_factory=PlacesConfig)
     image_gen: ImageGenConfig
 
 

@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from .clients.image_gen import SlurmImageGenClient
 from .config import ConfigError, load_config
 from .manifest import read_manifest, update_manifest
+from .mapping import RuleSpecMapper
 from .models import MAX_SEED, SkyMode
 from .outputs import SCENE_ID_PATTERN
 from .pipeline import ScenePipeline
@@ -170,9 +171,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {status.error}", file=sys.stderr)
             return 2
 
+    mapper = RuleSpecMapper(allow_candidates=config.places.allow_candidates)
     results = run_batch(
         entries,
-        ScenePipeline(client, config.out_dir),
+        ScenePipeline(client, config.out_dir, mapper=mapper),
         config.out_dir,
         personas_dir=args.personas,
         sky_mode=args.sky_mode,

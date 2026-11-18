@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from fakes import PEGASUS
-from scene_orchestrator.config import AppConfig, ImageGenConfig
+from scene_orchestrator.config import AppConfig, ImageGenConfig, PlacesConfig
 
 
 @pytest.fixture
@@ -15,4 +15,9 @@ def out_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def config(out_dir: Path) -> AppConfig:
-    return AppConfig(out_dir=out_dir, image_gen=ImageGenConfig(**PEGASUS))
+    # Every place in places_v1.yaml is still a candidate.
+    return AppConfig(
+        out_dir=out_dir,
+        image_gen=ImageGenConfig(**PEGASUS),
+        places=PlacesConfig(allow_candidates=True),
+    )

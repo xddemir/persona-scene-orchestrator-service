@@ -11,6 +11,8 @@ from pathlib import PurePosixPath
 
 from scene_orchestrator.clients.image_gen import ImageGenError, SlurmImageGenClient
 from scene_orchestrator.config import ImageGenConfig
+from scene_orchestrator.mapping import RuleSpecMapper
+from scene_orchestrator.pipeline import ScenePipeline
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"not really pixels"
 
@@ -114,3 +116,9 @@ def make_client(pegasus: FakePegasus, **config) -> SlurmImageGenClient:
     return SlurmImageGenClient(
         ImageGenConfig(**settings), shell=pegasus, sleep=clock.sleep, clock=clock
     )
+
+
+def make_pipeline(client: SlurmImageGenClient, out_dir) -> ScenePipeline:
+    """A pipeline whose mapper may use candidate places: every place in
+    places_v1.yaml is still one."""
+    return ScenePipeline(client, out_dir, mapper=RuleSpecMapper(allow_candidates=True))

@@ -13,11 +13,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from fakes import PEGASUS, PNG, FakePegasus, make_client
+from fakes import PEGASUS, PNG, FakePegasus, make_client, make_pipeline
 from scene_orchestrator.batch import QueueEntry, QueueError, main, read_queue, run_batch
 from scene_orchestrator.manifest import read_manifest
 from scene_orchestrator.models import SceneSpec
-from scene_orchestrator.pipeline import UNFINISHED, ScenePipeline, derive_seed
+from scene_orchestrator.pipeline import UNFINISHED, derive_seed
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "personas" / "chatbot"
 
@@ -29,7 +29,7 @@ def _queue(*participants: str, **fields) -> list[QueueEntry]:
 def _batch(pegasus, out_dir, entries, **options) -> dict[str, str]:
     options.setdefault("personas_dir", FIXTURES)
     options.setdefault("log", lambda _: None)
-    return run_batch(entries, ScenePipeline(make_client(pegasus), out_dir), out_dir, **options)
+    return run_batch(entries, make_pipeline(make_client(pegasus), out_dir), out_dir, **options)
 
 
 def _spec(out_dir: Path, scene_id: str) -> SceneSpec:
@@ -74,6 +74,7 @@ def test_a_procedural_batch_needs_no_pegasus(out_dir):
         assert manifest[alias] == {
             "status": "ok", "sky_mode": "procedural", "files": ["scene_spec.json"],
             "updated_at": manifest[alias]["updated_at"],
+            "place": manifest[alias]["place"],  # tests/test_places.py checks it
         }
 
 
@@ -263,7 +264,9 @@ def test_a_missing_queue_file_is_a_queue_error(tmp_path):
 @pytest.fixture
 def config_file(tmp_path: Path, out_dir: Path) -> Path:
     path = tmp_path / "config.yaml"
-    path.write_text(yaml.safe_dump({"out_dir": str(out_dir), "image_gen": PEGASUS}))
+    path.write_text(yaml.safe_dump({
+        "out_dir": str(out_dir), "places": {"allow_candidates": True}, "image_gen": PEGASUS,
+    }))
     return path
 
 

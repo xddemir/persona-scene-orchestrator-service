@@ -17,6 +17,7 @@ from scene_orchestrator.mapping import (
     TemplatePromptBuilder,
     attach_prompt,
 )
+from scene_orchestrator.axes import SPAWN_TABLE
 from scene_orchestrator.mapping.prompt_builder import (
     CLOSED_ABOVE,
     MILKY_WAY_BANDS,
@@ -24,17 +25,21 @@ from scene_orchestrator.mapping.prompt_builder import (
     RAIN_BANDS,
     SNOW_BANDS,
     STAR_BANDS,
+    VIEW_PHRASES,
+    WATER_PLACE_PHRASES,
 )
+from scene_orchestrator.mapping.rule_mapper import PLACES
 from scene_orchestrator.models import PersonaProfile, SceneSpec, Traits, Weather
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "personas" / "chatbot"
 BUILDER: PromptBuilder = TemplatePromptBuilder()  # also checks it fits the protocol
 TRAITS = ("openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism")
+MAPPER = RuleSpecMapper(allow_candidates=True)  # every place is still a candidate
 
 
 def _spec(alias: str) -> SceneSpec:
     raw = json.loads((FIXTURES / f"{alias}.json").read_text(encoding="utf-8"))
-    return RuleSpecMapper().map(ChatbotV2Adapter().adapt(raw), 1234, alias.lower())
+    return MAPPER.map(ChatbotV2Adapter().adapt(raw), 1234, alias.lower())
 
 
 def _persona(**traits) -> PersonaProfile:
@@ -48,31 +53,29 @@ def _all_specs():
     for values in itertools.product((0.0, 0.5, 1.0), repeat=5):
         persona = _persona(**dict(zip(TRAITS, values)))
         for seed in (0, 1, 2):
-            yield RuleSpecMapper().map(persona, seed, "t")
+            yield MAPPER.map(persona, seed, "t")
 
 
 # -- the fixtures -----------------------------------------------------------
 
 
 def test_p01_prompt_is_sheltered_before_sunrise():
-    spec = _spec("P01")  # at this seed: a rocky shore, so a beach
+    spec = _spec("P01")  # at the foot of the terraced mountain (terraces_foot)
     prompt = BUILDER.build(spec)
-    assert "sheltered" in prompt
-    assert "at dawn before sunrise" in prompt
+    assert "sheltered alpine basin at dawn before sunrise" in prompt
     assert "mostly cloudy sky" in prompt
-    # No sun is named under a closed sky, so the sea is just ahead.
-    assert "a beach, the open sea ahead" in prompt
-    # The beach caps the fog, so the horizon still shows.
-    assert spec.archetype == "beach"
+    assert "seen from the foot of a terraced mountain" in prompt
+    # The summit caps the fog, so the horizon still shows.
+    assert spec.archetype == "summit"
     assert "clear air" in prompt
 
 
 def test_an_anxious_persona_in_a_hollow_is_misty():
-    spec = RuleSpecMapper().map(_persona(openness=0.1, neuroticism=0.9), 1, "t")
+    spec = MAPPER.map(_persona(openness=0.45, neuroticism=0.9), 1, "t")  # hollow_pond
     assert spec.archetype == "hollow"
     prompt = BUILDER.build(spec)
     assert "heavy drifting mist" in prompt
-    assert "seen from a hollow among low hills" in prompt
+    assert "seen from a hollow among low hills, the shore of a lake close by" in prompt
 
 
 def test_p02_prompt_is_open_bright_and_clear():
@@ -143,22 +146,44 @@ def test_the_sky_named_is_one_that_can_be_seen(spec):
 
 
 def test_a_summit_is_seen_from_the_mountain_top():
-    specs = [RuleSpecMapper().map(_persona(openness=0.95, neuroticism=0.1), s, "t")
-             for s in range(20)]
-    summits = [s for s in specs if s.archetype == "summit"]
-    assert summits
-    for spec in summits:
+    for seed in range(5):
+        spec = MAPPER.map(_persona(openness=0.95, neuroticism=0.1), seed, "t")  # summit_top
+        assert spec.archetype == "summit"
         assert "seen from a high mountain top" in BUILDER.build(spec)
 
 
-def test_a_beach_at_sunset_looks_over_the_sea_into_the_sunset():
-    persona = _persona(openness=0.9, neuroticism=0.1, extraversion=0.42, conscientiousness=0.1)
-    beaches = [spec for spec in (RuleSpecMapper().map(persona, s, "t") for s in range(30))
-               if spec.archetype == "beach"]
-    assert beaches
-    for spec in beaches:
-        assert spec.lighting.time_of_day == "sunset"
-        assert "a beach, the sea toward the setting sun" in BUILDER.build(spec)
+@pytest.mark.parametrize(
+    ("place_id", "phrase"),
+    [
+        ("rocky_shore_top", "seen from high above a rocky shore, "
+                            "the open sea ahead, toward the setting sun"),
+        ("cliff_over_sea", "seen from a ridge overlooking the land below, "
+                           "the sea far below, toward the setting sun"),
+        ("beach_cove", "seen from a beach, the open sea ahead, toward the setting sun"),
+    ],
+)
+def test_the_sea_at_sunset_lies_toward_the_sun(place_id, phrase):
+    persona = _persona(extraversion=0.42, conscientiousness=0.1, neuroticism=0.1)
+    spec = RuleSpecMapper(allow_candidates=True, place_id=place_id).map(persona, 1, "t")
+    assert spec.lighting.time_of_day == "sunset"
+    assert phrase in BUILDER.build(spec)
+
+
+def test_every_place_is_named_as_it_is_built():
+    """The view and the water follow the place's axes, not its archetype."""
+    for place in PLACES.places:
+        spec = RuleSpecMapper(allow_candidates=True, place_id=place.id).map(_persona(), 1, "t")
+        prompt = BUILDER.build(spec)
+        if place.landform != "plain":
+            assert VIEW_PHRASES[(place.landform, place.position)] in prompt
+        if place.water != "none":
+            assert WATER_PLACE_PHRASES[(place.water, place.water_relation)] in prompt
+
+
+def test_every_position_unity_builds_has_a_view():
+    built = {(landform, position) for landform, row in SPAWN_TABLE.items()
+             for position, fix in row.items() if fix is None}
+    assert set(VIEW_PHRASES) == built
 
 
 @pytest.mark.parametrize("spec", list(_all_specs()))

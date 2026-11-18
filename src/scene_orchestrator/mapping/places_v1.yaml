@@ -1,0 +1,243 @@
+# The places a participant's scene can be at (places v1).
+#
+# The mapper picks one of these by the persona's shelter (shelter_level) and,
+# within that, novelty; see rule_mapper.py. Each is one Unity setting
+# (archetype) with its axes set, plus the biome (props, sky colour, sounds).
+# Only the light, fog, wind, prop density and colour vary from the persona;
+# nothing here does.
+#
+#   setting        hollow | overlook | summit | forest | meadow | beach
+#   biome          a kit in rule_mapper.BIOMES
+#   landform       plain | bowl | ridge | peak | shore | terraces | valley
+#   position       bottom | mid | top            where the participant sits
+#   water          none | river | lake | sea
+#   water_relation absent | beside | below | distant
+#   vegetation     sparse | moderate | dense
+#   season         spring | summer | autumn | winter; left out: the setting's
+#   shelter_level  1 open .. 5 sheltered
+#   novelty        0 familiar .. 1 unusual
+#   status         candidate | verified | rejected
+#   checked        the date of the last headset check, or null
+#
+# Every place is checked when it loads: the axis pairs Unity's SceneAxes
+# accepts, the water against its relation, the setting's May/Must/Never rules,
+# and a kit with water lilies only at a lake. A place Unity would change fails
+# the load.
+#
+# After a headset check, flip the status with
+#     python -m scene_orchestrator.places mark <id> verified|rejected --note "..."
+# or edit status, checked and note here by hand. Only verified places are
+# used unless configs/<name>.yaml sets places.allow_candidates; rejected
+# places never are. Restart the server afterwards: it reads this file once.
+
+places:
+  - id: forest_lake
+    setting: forest
+    biome: forest_clearing
+    landform: plain
+    position: mid
+    water: lake
+    water_relation: beside
+    vegetation: dense
+    shelter_level: 5
+    novelty: 0.2
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: hollow_pond
+    setting: hollow
+    biome: birch_grove
+    landform: bowl
+    position: bottom
+    water: lake
+    water_relation: beside
+    vegetation: dense
+    shelter_level: 5
+    novelty: 0.4
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: snow_hollow
+    setting: hollow
+    biome: snowy_valley
+    landform: bowl
+    position: bottom
+    water: none
+    water_relation: absent
+    vegetation: moderate
+    season: winter  # the ExperimentScene has a moss_rock_mix (Winter) ground style
+    shelter_level: 5
+    novelty: 0.9
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: forest_river
+    setting: forest
+    biome: birch_grove
+    landform: plain
+    position: mid
+    water: river
+    water_relation: beside
+    vegetation: moderate
+    shelter_level: 4
+    novelty: 0.3
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: valley_stream
+    setting: hollow
+    biome: forest_clearing
+    landform: valley
+    position: bottom
+    water: river
+    water_relation: beside
+    vegetation: moderate
+    shelter_level: 4
+    novelty: 0.5
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: terraces_foot
+    setting: summit
+    biome: alpine_basin
+    landform: terraces
+    position: bottom
+    water: none
+    water_relation: absent
+    vegetation: dense
+    shelter_level: 4
+    novelty: 0.8
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: meadow_lake
+    setting: meadow
+    biome: lakeside
+    landform: plain
+    position: mid
+    water: lake
+    water_relation: beside
+    vegetation: moderate
+    shelter_level: 3
+    novelty: 0.1
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: valley_lake_view
+    setting: meadow
+    biome: lakeside
+    landform: valley
+    position: mid
+    water: lake
+    water_relation: distant
+    vegetation: moderate
+    shelter_level: 3
+    novelty: 0.5
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: beach_cove
+    setting: beach
+    biome: coastal_pine
+    landform: shore
+    position: mid
+    water: sea
+    water_relation: beside
+    vegetation: moderate
+    shelter_level: 3
+    novelty: 0.4
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: open_meadow
+    setting: meadow
+    biome: open_meadow
+    landform: plain
+    position: mid
+    water: none
+    water_relation: absent
+    vegetation: sparse
+    shelter_level: 2
+    novelty: 0.0
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: ridge_lake_below
+    setting: overlook
+    biome: open_meadow
+    landform: ridge
+    position: mid
+    water: lake
+    water_relation: below
+    vegetation: sparse
+    shelter_level: 2
+    novelty: 0.5
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: rocky_shore_top
+    setting: beach
+    biome: rocky_shore
+    landform: shore
+    position: top
+    water: sea
+    water_relation: beside
+    vegetation: sparse
+    shelter_level: 2
+    novelty: 0.8
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: overlook_crest
+    setting: overlook
+    biome: open_meadow
+    landform: ridge
+    position: top
+    water: none
+    water_relation: absent
+    vegetation: sparse
+    shelter_level: 1
+    novelty: 0.3
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: cliff_over_sea
+    setting: overlook
+    biome: coastal_pine
+    landform: ridge
+    position: top
+    water: sea
+    water_relation: below
+    vegetation: sparse
+    shelter_level: 1
+    novelty: 0.7
+    status: candidate
+    checked: null
+    note: ""
+
+  - id: summit_top
+    setting: summit
+    biome: alpine_basin
+    landform: terraces
+    position: top
+    water: none
+    water_relation: absent
+    vegetation: sparse
+    shelter_level: 1
+    novelty: 0.9
+    status: candidate
+    checked: null
+    note: ""

@@ -10,17 +10,48 @@ printed in the thesis (`rules_markdown()`). Each rule names the trait it
 derives from. Values interpolate linearly between the trait's two poles:
 `at_0` when the trait is 0.0, `at_1` when it is 1.0.
 
+The place
+---------
+The persona chooses which place the scene is at, but only from a fixed list
+of places, each tuned by hand and checked in the VR headset
+(places_v1.yaml). It never sets a raw terrain number. A place is one Unity
+setting (archetype) with its landform, where the participant sits on it, the
+kind of water and where that lies from them, and how much grows; plus a biome
+and, for some, a season. The mapper picks the place mainly by shelter
+(pick_place). Light, fog, wind, prop density and colour still vary freely with
+the persona, by the linear rules, within each place's safe range (the fog's
+floor and cap).
+
+Why: shelter mostly comes from the terrain, from how enclosed the land is,
+where one sits on it and how far one sees. With one fixed landscape, a
+participant's own scene and the yoked scene would differ only in light, fog
+and props, and RQ3 (are the scenes distinct?) would likely fail. Driving the
+heightmap's numbers from the answers instead produces odd in-between
+landscapes, and that oddness would be a confound against the hand-made
+baseline scene. A short list of whole places, each checked in the headset,
+keeps the terrain a real choice without making it strange.
+
+The seed only moves things around: which way the sun, the moon and the wind
+come from, where the clouds are, which side the sun and the framing prop
+stand on, and (in Unity) where each prop stands. It never decides anything the
+persona should: not the place, not the biome, not which prop kinds. The draws
+are listed in map_persona.
+
 Prop, ground and archetype names are those of Unity's asset catalogue
-(CATALOGUE_V1). Audio-layer names stand in for a sound library that doesn't
-exist yet.
+(CATALOGUE_V1, in catalogue.py). Audio-layer names stand in for a sound
+library that doesn't exist yet.
 """
 
 from __future__ import annotations
 
 import colorsys
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
+from ..axes import LANDFORMS, POSITIONS, SPAWN_TABLE, WATER_TABLE, axis_space
+from ..catalogue import CATALOGUE_V1, RESERVED_PROPS, Catalogue, Setting  # noqa: F401  (re-exported)
 from ..models import (
     Activity,
     Anchor,
@@ -42,58 +73,7 @@ from ..models import (
     Water,
     Weather,
 )
-
-# -- Unity's asset catalogue ------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Setting:
-    """An archetype's defaults in Unity (its SettingProfile). Unity fills in
-    whatever the spec leaves out from these; placement and water are always
-    sent, since Unity reads the facing only with a placement."""
-
-    landform: str
-    placement: str
-    water: str
-    ground: str
-    horizon_m: float  # how far away the horizon mountains stand
-
-
-@dataclass(frozen=True)
-class Catalogue:
-    version: str
-    props: frozenset[str]
-    grounds: frozenset[str]
-    archetypes: dict[str, Setting]
-
-
-# The single source for every catalogue name a spec may carry.
-CATALOGUE_V1 = Catalogue(
-    version="v1",
-    # Only these place anything. pine_large, pine_medium, birch_light, fern and
-    # driftwood have no model yet; Unity lays them out all the same and shows
-    # them once the art is there.
-    props=frozenset({
-        "pine_large", "pine_medium", "birch_light", "rock_cluster", "fern",
-        "grass_tuft", "driftwood", "rock_small", "boulder",
-    }),
-    # Normally not sent: each archetype has its own (below).
-    grounds=frozenset({"moss_rock_mix", "dry_meadow", "sand_grass_mix", "alpine_rock"}),
-    archetypes={
-        "hollow": Setting("bowl", "basin_floor", "none", "moss_rock_mix", 300.0),
-        "overlook": Setting("ridge", "crest", "none", "dry_meadow", 340.0),
-        # 3 steps, 30 m high, a path winding up
-        "summit": Setting("terraces", "summit", "none", "alpine_rock", 420.0),
-        "forest": Setting("plain", "centre", "river", "moss_rock_mix", 300.0),
-        "meadow": Setting("plain", "centre", "lake", "dry_meadow", 330.0),
-        "beach": Setting("shore", "shore", "sea", "sand_grass_mix", 300.0),
-    },
-)
-
-# In the catalogue, but never in `props`: Unity places these itself, on the
-# horizon and along the summit's terraces. The ground adds grass, small
-# rocks, boulders, and reeds at the water, on its own too.
-RESERVED_PROPS = frozenset({"mountain", "cliff"})
+from .places import PLACES_FILE, Place, Places, load_places
 
 # -- trait -> parameter: linear rules ---------------------------------------
 
@@ -164,11 +144,11 @@ LINEAR_RULES: tuple[LinearRule, ...] = (
     # conscientiousness -> order
     LinearRule("procedural_sky.clouds.banding", "conscientiousness", 0.0, 1.0,
                "clouds in regular rows rather than scattered"),
+    # Sent only with ringed props (conscientiousness above RINGED_ABOVE), so
+    # in practice 0.65..1: rings a little loose at the threshold, exact at 1.
+    LinearRule("props[].order", "conscientiousness", 0.0, 1.0,
+               "props keep more exactly to their rings"),
 )
-
-# neuroticism -> prospect/refuge (Appleton). Between the two: "balanced".
-REFUGE_ABOVE = 0.6
-PROSPECT_BELOW = 0.4
 
 # neuroticism -> rain (snow in a snowy biome): none up to here, then rising to
 # steady at 1.0. The far end of the sheltering cloud cover: a veil that closes
@@ -185,49 +165,99 @@ MIDDAY_FROM_DEG = 40.0
 MORNING_ABOVE = 0.5
 
 # conscientiousness -> order in prop placement.
-RINGED_ABOVE = 0.65  # neat, regular arrangement
+RINGED_ABOVE = 0.65  # neat, regular arrangement: rings round the participant
 CLUSTERED_ABOVE = 0.35  # grouped; below this, "scattered"
-# Unity builds only "poisson" and "clustered" so far, and treats the other two
-# as poisson, with a warning. Until it builds them, each is sent as the
-# nearest it has: ringed (orderly) as clustered, scattered (loose) as poisson.
-DISTRIBUTION_STAND_IN = {"ringed": "clustered", "scattered": "poisson"}
+# Unity builds poisson, clustered and ringed (PropPlacer), and treats anything
+# else as poisson, with a warning. Until it builds scattered (loose), that is
+# sent as the nearest it has.
+DISTRIBUTION_STAND_IN = {"scattered": "poisson"}
 
-# openness -> number of prop types: 2 + round(3 * openness), so 2..5.
+# openness -> number of prop types: 2 + round(3 * openness), so 2..5, taken
+# from the front of the biome's kit.
 PROP_TYPES_MIN, PROP_TYPES_SPAN = 2, 3
-
-# openness -> biome: familiar landscapes for low openness, less common ones for
-# high. (upper bound of openness, biomes); the seed picks within the tier.
-BIOME_TIERS: tuple[tuple[float, tuple[str, ...]], ...] = (
-    (0.4, ("open_meadow", "forest_clearing")),
-    (0.7, ("lakeside", "birch_grove", "coastal_pine")),
-    (1.0, ("alpine_basin", "rocky_shore", "snowy_valley")),
-)
 
 # agreeableness: UNMAPPED. No parameter depends on it yet. Which (if any)
 # environmental quality agreeableness should drive is an open question in the
 # thesis, so it is left out on purpose rather than mapped arbitrarily.
 
-# -- the land: archetype, from biome and prospect/refuge ---------------------
+# -- the place: picked from places_v1.yaml ----------------------------------
 
-# biome (openness) x prospect_refuge_bias (neuroticism) -> the Unity setting.
-# The biome keeps the sky; neuroticism picks the land within it: a hollow to
-# shelter in, a view to look out over, or between the two. No seed draw, so
-# the sky (biome) and the land (archetype) can't disagree.
-ARCHETYPE_BY_BIOME: dict[str, dict[str, str]] = {
-    "open_meadow": {"refuge": "hollow", "balanced": "meadow", "prospect": "overlook"},
-    "forest_clearing": {"refuge": "hollow", "balanced": "forest", "prospect": "overlook"},
-    "birch_grove": {"refuge": "hollow", "balanced": "forest", "prospect": "overlook"},
-    "lakeside": {"refuge": "forest", "balanced": "meadow", "prospect": "meadow"},
-    "coastal_pine": {"refuge": "forest", "balanced": "beach", "prospect": "beach"},
-    "rocky_shore": {"refuge": "beach", "balanced": "beach", "prospect": "beach"},
-    "alpine_basin": {"refuge": "hollow", "balanced": "overlook", "prospect": "summit"},
-    "snowy_valley": {"refuge": "hollow", "balanced": "hollow", "prospect": "summit"},
-}
+# The pick rule (pick_place): shelter picks the band, novelty the place in it.
+SHELTER_LEVELS = (1, 5)  # shelter_level runs 1 (open) .. 5 (sheltered)
+# Novelties closer than this count as equally near: a tie, so list order decides.
+NOVELTY_TIE = 1e-9
 
-# Where the participant sits and what water there is: the archetype's
-# (CATALOGUE_V1), always sent. The water's sound follows its kind: no lake
-# lapping without a lake, waves only at the sea. It comes before the biome's
-# own ambience.
+# The place's shelter_level -> spatial.prospect_refuge_bias (Appleton), so
+# the bias can't disagree with the place. Between the two: "balanced".
+REFUGE_FROM_LEVEL = 4
+PROSPECT_TO_LEVEL = 2
+
+
+def _shelter(persona: PersonaProfile) -> float:
+    """How much shelter the persona seeks, 0..1. Today neuroticism, the same
+    trait as spatial.enclosure. The preference-profile adapter will replace it
+    with the profile's shelter dimension."""
+    return persona.traits.neuroticism
+
+
+def _novelty(persona: PersonaProfile) -> float:
+    """How unusual a place the persona seeks, 0..1. Today openness. The
+    preference-profile adapter will replace it with the profile's variety
+    dimension."""
+    return persona.traits.openness
+
+
+class NoUsablePlace(LookupError):
+    """No place may be used: none is verified, and candidates are not allowed."""
+
+
+def usable_places(places: Sequence[Place], allow_candidates: bool) -> list[Place]:
+    """Verified places, and candidates too while they are allowed. Never rejected ones."""
+    return [
+        p for p in places
+        if p.status == "verified" or (allow_candidates and p.status == "candidate")
+    ]
+
+
+def pick_place(
+    places: Sequence[Place], shelter: float, novelty: float, *, allow_candidates: bool
+) -> Place:
+    """The place for a persona. Pure: the same inputs always give the same place.
+
+    The target band is 1 + 4 * shelter, rounded half up (2.5 -> 3, 3.5 -> 4).
+    The band used is the nearest one with a usable place, the more sheltered
+    on a tie. Within it, the place with the nearest novelty; on a tie, the
+    first in the list.
+    """
+    pool = usable_places(places, allow_candidates)
+    if not pool:
+        statuses = sorted({p.status for p in places})
+        raise NoUsablePlace(
+            "no usable place: none is verified"
+            + ("" if allow_candidates else ", and places.allow_candidates is false")
+            + f" (statuses in the list: {', '.join(statuses) or 'none'}). Check places "
+            "in the headset and mark them verified, or allow candidates in the config."
+        )
+    low, high = SHELTER_LEVELS
+    target = _round_half_up(low + (high - low) * shelter)
+    band = min({p.shelter_level for p in pool}, key=lambda level: (abs(level - target), -level))
+    in_band = [(i, p) for i, p in enumerate(pool) if p.shelter_level == band]
+    return min(
+        in_band,
+        key=lambda ip: (round(abs(ip[1].novelty - novelty) / NOVELTY_TIE), ip[0]),
+    )[1]
+
+
+def _prospect_refuge(shelter_level: int) -> str:
+    if shelter_level >= REFUGE_FROM_LEVEL:
+        return "refuge"
+    if shelter_level <= PROSPECT_TO_LEVEL:
+        return "prospect"
+    return "balanced"
+
+
+# The water's sound follows its kind: no lake lapping without a lake, waves
+# only at the sea. It comes before the biome's own ambience.
 WATER_SOUND: dict[str, tuple[str, float]] = {
     "river": ("stream", 0.25),
     "lake": ("lake_lapping", 0.35),
@@ -238,24 +268,27 @@ SEA_SOUND_BY_BIOME: dict[str, tuple[str, float]] = {
 }
 
 # Unity's fog is exponential squared: exp(-(density * d)**2) of a thing d away
-# still shows. Capping density at FOG_HORIZON_DEPTH / horizon leaves
-# exp(-1.21), about 30%, of the horizon mountains, so a view keeps its depth.
-# A hollow is not capped: there the fog is the shelter.
+# still shows. Where mountains stand on the horizon, capping density at
+# FOG_HORIZON_DEPTH / horizon leaves exp(-1.21), about 30%, of them, so a view
+# keeps its depth. A setting without mountains has nothing to keep in view,
+# and a hollow is not capped either: there the fog is the shelter.
 FOG_HORIZON_DEPTH = 1.1
 FOG_UNCAPPED = frozenset({"hollow"})
 FOG_CAP: dict[str, float] = {
     name: round(FOG_HORIZON_DEPTH / setting.horizon_m, 4)
     for name, setting in CATALOGUE_V1.archetypes.items()
-    if name not in FOG_UNCAPPED
+    if setting.has_mountains and name not in FOG_UNCAPPED
 }
+# Never below a setting's fog floor (its minimumFogDensity): Unity raises it
+# to that anyway, so the spec says what is rendered.
 
 # -- the view: facing, focal and framing ------------------------------------
 
 # Which way the participant faces, from the light. A low sun (sunrise or
-# sunset) is faced: its glow is ahead, and so is the sea or river, which Unity
-# lays out in front. At night the moon is faced. By day the sun stands to one
-# side, so relief reads and nothing glares: this many degrees from it, to the
-# left or right (side and angle from the seed).
+# sunset) is faced: its glow is ahead, and so is water Unity lays out ahead.
+# At night the moon is faced. By day the sun stands to one side, so relief
+# reads and nothing glares: this many degrees from it, to the left or right
+# (side and angle from the seed).
 LOW_SUN_TIMES = frozenset({"sunrise", "sunset"})
 DAY_SUN_OFFSET_DEG = (60.0, 120.0)
 
@@ -273,6 +306,7 @@ FRAMING_OFFSET_DEG = (55.0, 80.0)
 # -- derived from spatial.enclosure (itself from neuroticism) ---------------
 
 # More enclosure -> more and denser props, standing closer to the viewer.
+# Unity then scales every count by the place's vegetation (x0.5, x1, x1.6).
 PROP_COUNT = (30, 150)  # per prop type at weight 1.0, enclosure 0 -> 1
 EXCLUDE_RADIUS_M = (25.0, 6.0)  # clear area around the viewer
 MIN_SPACING_M = (6.0, 2.5)
@@ -312,86 +346,98 @@ SNOW_BIOMES = frozenset({"snowy_valley"})  # where what falls is snow, not rain
 
 @dataclass(frozen=True)
 class BiomeKit:
-    terrain: str  # terrain.profile; Unity no longer reads it
     tree: str | None  # the biome's tree, for the focal and framing props; None: it has none
     # (catalogue prop, weight): weight scales the count. The first is the
-    # biome's signature prop and is always placed. Exactly 5, all different:
-    # openness = 1 places them all, and five entries keep the seed's draws
-    # (rng.sample) the same as before the kits were re-mapped to the catalogue.
+    # biome's signature prop and is always placed; openness takes 2..5 from
+    # the front. Exactly 5, all different, each one that places something in
+    # Unity (tests/test_catalogue.py).
     props: tuple[tuple[str, float], ...]
     ambience: tuple[tuple[str, float], ...]  # (layer, gain), fixed; the water's sound is added by its kind
     birds: str  # gain and rate come from extraversion
 
+    @property
+    def names(self) -> frozenset[str]:
+        """Every catalogue name the kit can send: its tree and its props."""
+        return frozenset({a for a, _ in self.props} | ({self.tree} if self.tree else set()))
 
-# Each entry keeps its place in the kit, so the seed picks the same entries
-# as before. Comments name the old asset where an entry stands in for one the
-# catalogue doesn't have.
+
+# Comments name the old asset an entry stands in for, and "was" the entry it
+# replaced when the kits were cut to the props that place something (0.4).
 BIOMES: dict[str, BiomeKit] = {
     "open_meadow": BiomeKit(
-        "gentle_slope", "birch_light",
+        "bush",
         (("grass_tuft", 1.0),
          ("rock_cluster", 0.05),  # for wildflower_patch
-         ("birch_light", 0.1),  # for oak_solitary
+         ("bush", 0.1),  # was birch_light (for oak_solitary)
          ("pine_medium", 0.05),  # for fence_post
-         ("driftwood", 0.05)),  # for hay_bale
+         ("rock_small", 0.05)),  # was driftwood (for hay_bale)
         (("wind_grass", 0.3), ("insects", 0.15)), "birdsong_meadow",
     ),
     "forest_clearing": BiomeKit(
-        "flat", "pine_large",
-        (("pine_large", 1.0), ("fern", 0.8),
+        "pine_large",
+        (("pine_large", 1.0),
+         ("bush", 0.8),  # was fern
          ("pine_medium", 0.3),  # for mushroom_cluster
-         ("driftwood", 0.2),  # mossy_log
+         ("rock_small", 0.2),  # was driftwood (mossy_log)
          ("boulder", 0.15)),
         (("wind_canopy", 0.25), ("leaves_rustle", 0.2)), "birdsong_forest",
     ),
+    # Water lilies: only at a lake (checked when the places load).
     "lakeside": BiomeKit(
-        "gentle_slope", "birch_light",
+        "bush",
         (("grass_tuft", 1.0),  # for reed_bed: the ground grows the reeds at the water
-         ("birch_light", 0.4),
-         ("fern", 0.3),  # for willow
+         ("bush", 0.4),  # was birch_light
+         ("pine_medium", 0.3),  # was fern (for willow)
          ("rock_cluster", 0.3),  # smooth_stone
-         ("driftwood", 0.05)),  # for wooden_jetty
+         ("water_lily", 0.05)),  # was driftwood (for wooden_jetty)
         (("wind_reeds", 0.2),), "birdsong_wetland",
     ),
+    # A pine_medium grove until a birch model exists; the id stays.
     "birch_grove": BiomeKit(
-        "rolling", "birch_light",
-        (("birch_light", 1.0), ("fern", 0.6),
-         ("pine_medium", 0.2),  # for birch_sapling
+        "pine_medium",
+        (("pine_medium", 1.0),  # was birch_light
+         ("bush", 0.6),  # was fern
+         ("boulder", 0.2),  # was pine_medium (for birch_sapling)
          ("grass_tuft", 0.4),  # wildflower_patch
-         ("driftwood", 0.2)),  # mossy_log
+         ("rock_small", 0.2)),  # was driftwood (mossy_log)
         (("wind_canopy", 0.25), ("leaves_rustle", 0.2)), "birdsong_forest",
     ),
     "coastal_pine": BiomeKit(
-        "rolling", "pine_large",
+        "pine_large",
         (("pine_large", 1.0), ("grass_tuft", 0.8),
          ("pine_medium", 0.4),  # for beach_shrub
-         ("driftwood", 0.2), ("boulder", 0.15)),
+         ("rock_small", 0.2),  # was driftwood
+         ("boulder", 0.15)),
         (("wind_pines", 0.2),), "seabirds",
     ),
     "alpine_basin": BiomeKit(
-        "basin", "pine_large",
+        "pine_large",
         (("pine_large", 1.0), ("grass_tuft", 0.8), ("pine_medium", 0.5),
          ("boulder", 0.4), ("rock_cluster", 0.3)),
         (("wind_high", 0.3),), "birdsong_alpine",
     ),
     "rocky_shore": BiomeKit(
-        "rolling", None,
+        None,
         (("rock_cluster", 1.0), ("grass_tuft", 0.6),
          ("boulder", 0.3),  # for tide_pool
          ("rock_small", 0.2),  # for kelp_pile
-         ("driftwood", 0.2)),
+         ("bush", 0.2)),  # was driftwood
         (("wind_coast", 0.25),), "seabirds",
     ),
     "snowy_valley": BiomeKit(
-        "basin", "pine_large",
+        "pine_large",
         (("pine_large", 1.0),
          ("pine_medium", 0.4),  # for snow_drift
          ("rock_cluster", 0.2),  # for frozen_shrub
          ("boulder", 0.3),
-         ("driftwood", 0.15)),  # deadwood
+         ("rock_small", 0.15)),  # was driftwood (deadwood)
         (("wind_snow", 0.3), ("snow_settle", 0.1)), "birdsong_winter",
     ),
 }
+
+# The places, checked against the kits and Unity's axis tables at import: a
+# list Unity would not build as written stops the service from starting.
+PLACES: Places = load_places(PLACES_FILE, kits={b: kit.names for b, kit in BIOMES.items()})
 
 # -- the procedural sky, per biome ------------------------------------------
 
@@ -439,18 +485,87 @@ BIOME_GROUND_COLOR: dict[str, tuple[float, float, float]] = {
 
 
 class RuleSpecMapper:
+    """map_persona with the place rule's settings.
+
+    allow_candidates: candidates count as usable (while places are being
+    checked; false for the study). place_id: always this place, whatever the
+    persona (headset review).
+    """
+
+    def __init__(
+        self,
+        *,
+        allow_candidates: bool = False,
+        place_id: str | None = None,
+        places: Places | None = None,
+    ) -> None:
+        self.allow_candidates = allow_candidates
+        self.place_id = place_id
+        self.places = places or PLACES
+
     def map(self, persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
-        return map_persona(persona, seed, scene_id)
+        return map_persona(persona, seed, scene_id, place=self.place_for(persona))
+
+    def place_for(self, persona: PersonaProfile) -> Place:
+        if self.place_id is not None:
+            return self.places.get(self.place_id)
+        return pick_place(
+            self.places.places, _shelter(persona), _novelty(persona),
+            allow_candidates=self.allow_candidates,
+        )
+
+    def provenance(self, persona: PersonaProfile) -> dict[str, Any]:
+        """For the manifest: the place, its status as loaded, the candidate
+        flag and the hash of the list, so a scene can be traced to both."""
+        place = self.place_for(persona)
+        entry: dict[str, Any] = {
+            "id": place.id,
+            "status": place.status,
+            "allow_candidates": self.allow_candidates,
+            "places_sha256": self.places.sha256,
+        }
+        if self.place_id is not None:
+            entry["forced"] = True  # picked by hand, not by the rule
+        return {"place": entry}
 
 
-def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
+def map_persona(
+    persona: PersonaProfile,
+    seed: int,
+    scene_id: str,
+    *,
+    place: Place | None = None,
+    allow_candidates: bool = False,
+) -> SceneSpec:
+    """The spec for a persona at a place: `place`, else the one pick_place
+    gives (from PLACES, with or without candidates).
+
+    The seed's draws, in this order (reordering them changes every scene).
+    Each decides only where or which way something is, and each is drawn
+    whether or not it is used:
+
+         1. sun azimuth
+         2. wind direction
+       3-4. cloud offset (x, then y)
+         5. moon azimuth spread: give or take from where its phase puts it
+         6. moon elevation
+         7. sun side: left or right of the facing, by day
+         8. sun offset: how far to that side, by day
+         9. framing side: left or right of the facing
+        10. framing offset: how far to that side
+    """
     traits = persona.traits
-    rng = random.Random(seed)  # the only source of variation besides traits
-
-    # Draws happen in this fixed order; reordering them changes every scene.
-    biome = _pick_biome(traits.openness, rng)
+    if place is None:
+        place = pick_place(
+            PLACES.places, _shelter(persona), _novelty(persona),
+            allow_candidates=allow_candidates,
+        )
+    biome, archetype = place.biome, place.setting
     kit = BIOMES[biome]
-    prop_assets = _pick_prop_types(kit, traits.openness, rng)
+    setting = CATALOGUE_V1.archetypes[archetype]
+    prop_assets = _pick_prop_types(kit, traits.openness)
+
+    rng = random.Random(seed)  # the only source of variation besides traits
     sun_azimuth = _r(rng.uniform(0.0, 360.0))
     wind_direction = _r(rng.uniform(0.0, 360.0))
     cloud_offset = (
@@ -459,8 +574,6 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
     )
     moon_spread = rng.uniform(-MOON_AZIMUTH_SPREAD_DEG, MOON_AZIMUTH_SPREAD_DEG)
     moon_elevation = _r(rng.uniform(*MOON_ELEVATION_DEG))
-    # Added in 0.3, after all of the above, so those keep their values. Each
-    # is drawn whether or not it is used.
     sun_side = _side(rng)
     sun_offset = rng.uniform(*DAY_SUN_OFFSET_DEG)
     framing_side = _side(rng)
@@ -471,12 +584,8 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
     moon_phase = _linear("lighting.moon_phase", traits)
     moon_azimuth = _r((sun_azimuth + 180.0 * moon_phase + moon_spread) % 360.0)
     night = time_of_day == "night"
-
-    bias = _prospect_refuge(traits.neuroticism)
-    archetype = ARCHETYPE_BY_BIOME[biome][bias]
-    setting = CATALOGUE_V1.archetypes[archetype]
     facing = _facing(time_of_day, sun_azimuth, moon_azimuth, sun_side * sun_offset)
-    water = setting.water
+    water = place.water
 
     enclosure = _linear("spatial.enclosure", traits)
     distribution = _distribution(traits.conscientiousness)
@@ -494,6 +603,7 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
             cluster_count=(
                 max(1, count // PROPS_PER_CLUSTER) if distribution == "clustered" else None
             ),
+            order=_linear("props[].order", traits) if distribution == "ringed" else None,
         ))
 
     sound = _water_sound(biome, water)
@@ -503,10 +613,6 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
         gain=_linear("audio.birds.gain", traits),
         event_rate_per_min=_linear("audio.birds.event_rate_per_min", traits),
     ))
-
-    fog_density = _linear("lighting.fog_density", traits)
-    if archetype in FOG_CAP:
-        fog_density = min(fog_density, FOG_CAP[archetype])
 
     return SceneSpec(
         scene_id=scene_id,
@@ -518,15 +624,21 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
         # Filled in whatever the sky mode: it costs nothing, and it is what
         # Unity renders when there is no panorama.
         procedural_sky=_procedural_sky(biome, traits, cloud_offset),
-        # The landform, ground and horizon are left to the archetype.
+        # The place's axes, all of them; the heightmap's numbers, the ground
+        # and where the water lies are left to the setting.
         terrain=Terrain(
-            profile=kit.terrain,
+            landform=place.landform,
+            position=place.position,
+            water_relation=place.water_relation,
+            vegetation=place.vegetation,
+            season=place.season,
             water=Water(
                 present=water != "none",
                 motion=_linear("terrain.water.motion", traits) if water != "none" else 0.0,
                 kind=water,
             ),
-            spawn=Spawn(placement=setting.placement, facing_deg=facing),
+            # position says where the participant sits; Unity reads the facing from here.
+            spawn=Spawn(facing_deg=facing),
         ),
         props=props,
         focal=Anchor(
@@ -556,7 +668,7 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
                 if night
                 else _interpolate(SUN_INTENSITY, sun_elevation)
             ),
-            fog_density=fog_density,
+            fog_density=_fog_density(traits, archetype, setting),
         ),
         weather=Weather(
             precipitation=_precipitation(traits.neuroticism),
@@ -565,7 +677,7 @@ def map_persona(persona: PersonaProfile, seed: int, scene_id: str) -> SceneSpec:
         spatial=Spatial(
             enclosure=enclosure,
             sightline_distance_m=_linear("spatial.sightline_distance_m", traits),
-            prospect_refuge_bias=bias,
+            prospect_refuge_bias=_prospect_refuge(place.shelter_level),
         ),
         audio=audio,
         motion=Motion(
@@ -586,12 +698,13 @@ def _linear(parameter: str, traits: Traits) -> float:
     return _r(_lerp(rule.at_0, rule.at_1, getattr(traits, rule.trait)))
 
 
-def _prospect_refuge(neuroticism: float) -> str:
-    if neuroticism > REFUGE_ABOVE:
-        return "refuge"
-    if neuroticism < PROSPECT_BELOW:
-        return "prospect"
-    return "balanced"
+def _fog_density(traits: Traits, archetype: str, setting: Setting) -> float:
+    """The rule's fog, capped where the horizon mountains should show, and
+    never below the setting's floor, which Unity would raise it to."""
+    fog = _linear("lighting.fog_density", traits)
+    if archetype in FOG_CAP:
+        fog = min(fog, FOG_CAP[archetype])
+    return max(fog, setting.fog_floor)
 
 
 def _precipitation(neuroticism: float) -> float:
@@ -699,21 +812,11 @@ def _rgb(channels) -> tuple[float, float, float]:
     return (r, g, b)
 
 
-def _pick_biome(openness: float, rng: random.Random) -> str:
-    for upper, biomes in BIOME_TIERS:
-        if openness < upper or upper == BIOME_TIERS[-1][0]:
-            return rng.choice(biomes)
-    raise AssertionError("unreachable: the last tier covers openness = 1.0")
-
-
-def _pick_prop_types(
-    kit: BiomeKit, openness: float, rng: random.Random
-) -> list[tuple[str, float]]:
+def _pick_prop_types(kit: BiomeKit, openness: float) -> list[tuple[str, float]]:
+    """The first n of the kit, n = 2 + round(3 * openness): no seed draw, so
+    the persona alone decides which kinds of prop there are."""
     n = PROP_TYPES_MIN + _round_half_up(PROP_TYPES_SPAN * openness)
-    signature, *others = kit.props
-    chosen = rng.sample(others, n - 1)
-    # Keep the kit's order, so a spec reads the same way every time.
-    return [signature] + [p for p in others if p in chosen]
+    return list(kit.props[:n])
 
 
 def _lerp(at_0: float, at_1: float, t: float) -> float:
@@ -747,7 +850,9 @@ def rules_markdown() -> str:
     """The rules as Markdown tables, ready to paste into the thesis."""
     sections = (
         ("Linear rules", _linear_table()),
-        ("Archetype: biome (openness) × prospect/refuge (neuroticism)", _archetype_table()),
+        (f"Places ({PLACES.path.name})", _places_table()),
+        ("The rule that picks a place", _pick_table()),
+        ("Every place Unity can build", _space_table()),
         (f"Per archetype (Unity catalogue {CATALOGUE_V1.version})", _setting_table()),
         ("Facing, focal and framing", _view_table()),
         ("Prop distribution (conscientiousness)", _distribution_table()),
@@ -770,26 +875,90 @@ def _linear_table() -> str:
     )
 
 
-def _archetype_table() -> str:
-    biases = ("refuge", "balanced", "prospect")
+def _places_table() -> str:
+    def water(p: Place) -> str:
+        return "none" if p.water == "none" else f"{p.water} {p.water_relation}"
+
     return _table(
-        ("Biome", *biases),
-        ((biome, *(row[b] for b in biases)) for biome, row in ARCHETYPE_BY_BIOME.items()),
+        ("Place", "Setting", "Landform", "Position", "Water", "Vegetation", "Season", "Biome",
+         "Shelter", "Novelty", "Status"),
+        ((p.id, p.setting, p.landform, p.position, water(p), p.vegetation,
+          p.season or "(setting's)", p.biome, str(p.shelter_level), f"{p.novelty:g}", p.status)
+         for p in PLACES.places),
     )
 
 
+def _pick_table() -> str:
+    low, high = SHELTER_LEVELS
+    return _table(
+        ("Step", "Rule"),
+        (
+            ("shelter", "neuroticism, 0..1 (the preference profile's shelter will replace it)"),
+            ("novelty", "openness, 0..1 (the preference profile's variety will replace it)"),
+            ("target band", f"{low} + {high - low} × shelter, rounded half up "
+                            "(2.5 → 3, 3.5 → 4)"),
+            ("usable", "verified places; candidates too while `places.allow_candidates` is "
+                       "true; rejected never"),
+            ("band", "the nearest `shelter_level` with a usable place; on a tie, the more "
+                     "sheltered"),
+            ("place", "in that band, the nearest novelty; on a tie, the first in the list"),
+            ("`spatial.prospect_refuge_bias`", f"from the place: shelter_level ≥ "
+                                              f"{REFUGE_FROM_LEVEL} refuge, ≤ "
+                                              f"{PROSPECT_TO_LEVEL} prospect, else balanced"),
+            ("seed", "no part in it"),
+        ),
+    )
+
+
+def _space_table() -> str:
+    """Every combination SceneAxes builds as it is, by landform and position,
+    with the places that use it."""
+    space = axis_space()
+    rows = []
+    for landform in LANDFORMS:
+        for position in POSITIONS:
+            if SPAWN_TABLE[landform][position] is not None:
+                continue
+            here = [c for c in space if (c.landform, c.position) == (landform, position)]
+            used = [p for p in PLACES.places if (p.landform, p.position) == (landform, position)]
+            rows.append((
+                landform, position, _water_options(landform), str(len(here)),
+                ", ".join(f"{p.id} ({_place_water(p)}, {p.vegetation})" for p in used) or "–",
+            ))
+    used = {(p.landform, p.position, p.water, p.water_relation, p.vegetation)
+            for p in PLACES.places}
+    summary = (
+        f"Unity builds {len(space)} combinations of landform × position × water × water "
+        f"relation × vegetation as they are (SceneAxes' two tables, the water agreeing with "
+        f"its relation; before any setting's rules, and with the season on top). "
+        f"{PLACES.path.name} uses {len(used)} of them, in {len(PLACES.places)} places."
+    )
+    return summary + "\n\n" + _table(
+        ("Landform", "Position", "Water", "Combinations", "In the places"), rows
+    )
+
+
+def _water_options(landform: str) -> str:
+    relations = [r for r, fix in WATER_TABLE[landform].items() if fix is None and r != "absent"]
+    options = ["none"] if WATER_TABLE[landform]["absent"] is None else []
+    if relations:
+        options.append(f"river, lake or sea {', '.join(relations)}")
+    return "; ".join(options)
+
+
+def _place_water(place: Place) -> str:
+    return "no water" if place.water == "none" else f"{place.water} {place.water_relation}"
+
+
 def _setting_table() -> str:
-    def sound(name: str, kind: str) -> str:
-        if kind == "none":
-            return "none"
-        layers = {_water_sound(b, kind)[0][0] for b, row in ARCHETYPE_BY_BIOME.items()
-                  if name in row.values()}
-        return f"{kind} ({', '.join(sorted(layers))})"
+    def water(s: Setting) -> str:
+        return "none" if s.water == "none" else f"{s.water} {s.water_relation}"
 
     return _table(
-        ("Archetype", "Landform", "Placement", "Water (sound)", "Ground", "Horizon (m)",
-         "Fog cap"),
-        ((name, s.landform, s.placement, sound(name, s.water), s.ground, f"{s.horizon_m:g}",
+        ("Archetype", "Landform", "Position", "Water", "Vegetation", "Ground", "Horizon (m)",
+         "Mountains", "Fog floor", "Fog cap"),
+        ((name, s.landform, s.position, water(s), s.vegetation, s.ground, f"{s.horizon_m:g}",
+          f"{s.mountain_arc_deg:g}°" if s.has_mountains else "none", f"{s.fog_floor:g}",
           f"{FOG_CAP[name]:g}" if name in FOG_CAP else "none")
          for name, s in CATALOGUE_V1.archetypes.items()),
     )

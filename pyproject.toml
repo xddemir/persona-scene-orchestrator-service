@@ -25,5 +25,9 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# The places are data the mapper reads at import.
+"scene_orchestrator.mapping" = ["*.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

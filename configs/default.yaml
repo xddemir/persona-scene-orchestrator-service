@@ -19,6 +19,12 @@ auto_create:
   # procedural: never an image, only the scene's spec.
   sky_mode: panorama
 
+# Which places (src/scene_orchestrator/mapping/places_v1.yaml) a scene may be
+# at. Verified ones always; candidates, not yet checked in the headset, only
+# while this is true. Rejected ones never. Set it to false for the study.
+places:
+  allow_candidates: true
+
 image_gen:
   # Each skybox is a Slurm job on Pegasus, submitted over the shared SSH
   # connection you open by hand in WSL and leave open (see README):
