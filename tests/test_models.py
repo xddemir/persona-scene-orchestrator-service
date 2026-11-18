@@ -307,7 +307,8 @@ def test_overrides_default_to_null_so_unity_uses_the_archetype():
                   terrain["feature_scale_m"], terrain["roughness"], water["distance_m"],
                   water["azimuth_deg"], spec["spatial"]["silhouette_distance_m"],
                   terrain["landform"], terrain["position"], terrain["water_relation"],
-                  terrain["vegetation"], terrain["season"], spec["props"][0]["order"]):
+                  terrain["vegetation"], terrain["season"], terrain["grass"],
+                  spec["props"][0]["order"]):
         assert value is None
 
 
@@ -315,6 +316,56 @@ def test_terrain_profile_is_gone():
     """Unity stopped reading it; 0.4 dropped it."""
     with pytest.raises(ValidationError, match="profile"):
         SceneSpec.model_validate(_with(SPEC, "terrain.profile", "gentle_slope"))
+
+
+# -- the grass (terrain.grass) ----------------------------------------------
+
+GRASS = {
+    "healthy_color": [0.93, 0.96, 1.0], "dry_color": [0.78, 0.82, 0.86],
+    "width_scale": 0.9, "height_scale": 0.6, "noise_spread": 2.0,
+    "grass_density": 0.45, "flower_density": 0.15, "no_flowers": True,
+}
+
+
+def test_a_valid_grass_builds():
+    grass = SceneSpec.model_validate(_with(SPEC, "terrain.grass", GRASS)).terrain.grass
+    assert grass.healthy_color == (0.93, 0.96, 1.0)
+    assert (grass.height_scale, grass.no_flowers) == (0.6, True)
+
+
+def test_every_grass_field_is_optional():
+    """Unity takes whatever is left out from the season's own look."""
+    for name, value in GRASS.items():
+        grass = SceneSpec.model_validate(_with(SPEC, "terrain.grass", {name: value})).terrain.grass
+        assert getattr(grass, name) is not None
+    assert SceneSpec.model_validate(_with(SPEC, "terrain.grass", {})).terrain.grass is not None
+
+
+def test_terrain_without_grass_still_builds():
+    assert "grass" not in SPEC["terrain"]
+    assert SceneSpec.model_validate(SPEC).terrain.grass is None
+    assert SceneSpec.model_validate(_with(SPEC, "terrain.grass", None)).terrain.grass is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("healthy_color", [0.5, 0.5]),  # not three values
+        ("dry_color", [0.5, 0.5, 0.5, 1.0]),
+        ("healthy_color", [0.5, 1.2, 0.5]),  # above 1
+        ("dry_color", [-0.1, 0.5, 0.5]),
+        # 0 would mean "the season's" to Unity, so it is never sent.
+        ("width_scale", 0),
+        ("height_scale", -0.5),
+        ("noise_spread", 0),
+        ("grass_density", 0),
+        ("flower_density", 0),  # no flowers is no_flowers
+        ("blade_length", 1.0),  # Unity reads no such field
+    ],
+)
+def test_bad_grass_is_rejected(field, value):
+    with pytest.raises(ValidationError, match=field):
+        SceneSpec.model_validate(_with(SPEC, "terrain.grass", {**GRASS, field: value}))
 
 
 # -- the place's axes (0.4): resolved against the setting, then checked -------

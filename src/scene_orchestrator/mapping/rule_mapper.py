@@ -63,6 +63,7 @@ from ..models import (
     Activity,
     Anchor,
     AudioLayer,
+    Grass,
     Lighting,
     Motion,
     PersonaProfile,
@@ -345,6 +346,34 @@ ACTIVITY = "seated_relaxation"
 
 SNOW_BIOMES = frozenset({"snowy_valley"})  # where what falls is snow, not rain
 
+# -- the grass, by season ---------------------------------------------------
+
+# terrain.grass for a place that names a season: a copy of Unity's own table
+# (GrassLook.OfSeason), so the spec on disk says what the headset shows.
+# Unity's grass, fern and reed billboards take these; flowers keep their
+# colours, only how many there are changes. A place without a season sends
+# nothing, and Unity uses its table for the setting's season.
+SEASON_GRASS: dict[str, Grass | None] = {
+    # FlipGameDev's billboards as they are: the look the grounds were tuned in.
+    "summer": None,
+    # Fresh, light green growth, not yet at full height, and more flowers.
+    "spring": Grass(
+        healthy_color=(0.55, 0.95, 0.40), dry_color=(0.45, 0.80, 0.35),
+        height_scale=0.85, grass_density=0.9, flower_density=1.8,
+    ),
+    # Golden to brown, a little thinner, with a few late flowers left.
+    "autumn": Grass(
+        healthy_color=(0.85, 0.68, 0.32), dry_color=(0.62, 0.42, 0.22),
+        grass_density=0.8, flower_density=0.15,
+    ),
+    # Snow white to frosted grey, short and thin, and no flowers at all
+    # (no_flowers, since Unity reads a flower_density of 0 as "the season's").
+    "winter": Grass(
+        healthy_color=(0.93, 0.96, 1.00), dry_color=(0.78, 0.82, 0.86),
+        width_scale=0.9, height_scale=0.6, grass_density=0.45, no_flowers=True,
+    ),
+}
+
 # -- what each biome sounds like --------------------------------------------
 
 # A biome no longer brings props: each place lists its own (places_v1.yaml).
@@ -568,6 +597,7 @@ def map_persona(
             water_relation=place.water_relation,
             vegetation=place.vegetation,
             season=place.season,
+            grass=SEASON_GRASS[place.season] if place.season else None,
             water=Water(
                 present=water != "none",
                 motion=_linear("terrain.water.motion", traits) if water != "none" else 0.0,
@@ -793,6 +823,7 @@ def rules_markdown() -> str:
         ("Facing, focal and framing", _view_table()),
         ("Prop distribution (conscientiousness)", _distribution_table()),
         ("Props per place", _place_props_table()),
+        ("Grass by season (`terrain.grass`)", _grass_table()),
         ("Biome sounds", _sound_table()),
     )
     return "\n\n".join(f"### {title}\n\n{table}" for title, table in sections)
@@ -809,6 +840,35 @@ def _linear_table() -> str:
         ("Parameter", "Trait", "at 0.0", "at 1.0", "Rationale"),
         ((f"`{r.parameter}`", r.trait, f"{r.at_0:g}", f"{r.at_1:g}", r.rationale)
          for r in LINEAR_RULES),
+    )
+
+
+def _grass_table() -> str:
+    def rgb(color: tuple[float, float, float] | None) -> str:
+        return "–" if color is None else "(" + ", ".join(f"{c:.2f}" for c in color) + ")"
+
+    def times(value: float | None) -> str:
+        return "×1" if value is None else f"×{value:g}"
+
+    def flowers(grass: Grass) -> str:
+        return "none" if grass.no_flowers else times(grass.flower_density)
+
+    rows = []
+    for season, grass in SEASON_GRASS.items():
+        if grass is None:
+            rows.append((season, "not sent: FlipGameDev's billboards as they are",
+                         "", "", "", "", ""))
+            continue
+        rows.append((season, rgb(grass.healthy_color), rgb(grass.dry_color),
+                     f"{times(grass.width_scale)} / {times(grass.height_scale)}",
+                     times(grass.grass_density), flowers(grass),
+                     "–" if grass.noise_spread is None else f"{grass.noise_spread:g}"))
+    note = ("Sent only for a place that names a season; without one, `terrain.grass` is "
+            "null and Unity uses the same table for the setting's season.")
+    return note + "\n\n" + _table(
+        ("Season", "Healthy colour", "Dry colour", "Width / height", "Grass", "Flowers",
+         "Noise spread"),
+        rows,
     )
 
 

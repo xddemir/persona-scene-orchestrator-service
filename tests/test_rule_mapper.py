@@ -6,6 +6,7 @@ import colorsys
 import itertools
 import json
 import math
+import re
 from pathlib import Path
 from typing import get_args
 
@@ -29,12 +30,14 @@ from scene_orchestrator.mapping.rule_mapper import (
     MOON_COLOR_TEMPERATURE_K,
     PLACES,
     RESERVED_PROPS,
+    SEASON_GRASS,
     SKY_TINT_SATURATION,
     SKY_TINT_VALUE,
     SUNRISE_GLOW,
     SUNSET_GLOW,
     _order,
     _procedural_sky,
+    map_persona,
 )
 from scene_orchestrator.models import MAX_SEED, PersonaProfile, SceneSpec, TimeOfDay, Traits
 from scene_orchestrator.models.scene_spec import Archetype, Biome
@@ -710,6 +713,134 @@ def test_fixtures_produce_valid_specs(p01, p02):
         assert SceneSpec.model_validate(json.loads(spec.model_dump_json())) == spec
 
 
+# -- the grass, by season ---------------------------------------------------
+
+
+def test_a_winter_place_sends_white_grass_and_no_flowers():
+    spec = RuleSpecMapper(allow_candidates=True, place_id="snow_hollow").map(_persona(), 3, "t")
+    grass = spec.terrain.grass
+    assert spec.terrain.season == "winter"
+    assert all(channel > 0.9 for channel in grass.healthy_color)
+    assert grass.no_flowers is True
+    assert grass.flower_density is None  # never 0: Unity would read that as "the season's"
+
+
+def test_a_summer_place_and_a_place_without_a_season_send_no_grass():
+    place = PLACES.get("forest_lake")
+    assert place.season is None
+    no_season = map_persona(_persona(), 3, "t", place=place)
+    summer = map_persona(_persona(), 3, "t", place=place.model_copy(update={"season": "summer"}))
+    assert (no_season.terrain.season, no_season.terrain.grass) == (None, None)
+    assert (summer.terrain.season, summer.terrain.grass) == ("summer", None)
+
+
+@pytest.mark.parametrize("season", ["spring", "summer", "autumn", "winter"])
+def test_each_season_sends_its_row_of_the_table(season):
+    place = PLACES.get("forest_lake").model_copy(update={"season": season})
+    spec = map_persona(_persona(), 3, "t", place=place)
+    assert spec.terrain.grass == SEASON_GRASS[season]
+    assert SceneSpec.model_validate(json.loads(spec.model_dump_json())) == spec
+
+
+def test_the_season_table_is_unitys():
+    """A copy of GrassLook.OfSeason in the Unity project; the two must agree."""
+    spring, autumn, winter = (SEASON_GRASS[s] for s in ("spring", "autumn", "winter"))
+    assert SEASON_GRASS["summer"] is None
+    assert spring.model_dump(exclude_none=True) == {
+        "healthy_color": (0.55, 0.95, 0.40), "dry_color": (0.45, 0.80, 0.35),
+        "height_scale": 0.85, "grass_density": 0.9, "flower_density": 1.8,
+    }
+    assert autumn.model_dump(exclude_none=True) == {
+        "healthy_color": (0.85, 0.68, 0.32), "dry_color": (0.62, 0.42, 0.22),
+        "grass_density": 0.8, "flower_density": 0.15,
+    }
+    assert winter.model_dump(exclude_none=True) == {
+        "healthy_color": (0.93, 0.96, 1.00), "dry_color": (0.78, 0.82, 0.86),
+        "width_scale": 0.9, "height_scale": 0.6, "grass_density": 0.45, "no_flowers": True,
+    }
+
+
+# -- against the JSON Schema Unity validates with ---------------------------
+
+SCHEMA = json.loads(
+    (Path(__file__).resolve().parent.parent / "schema" / "scene_spec.schema.json")
+    .read_text(encoding="utf-8")
+)
+_JSON_TYPES = {
+    "object": dict, "array": list, "string": str, "boolean": bool, "null": type(None),
+    "integer": int, "number": (int, float),
+}
+
+
+def _schema_errors(value, node, where="$") -> list[str]:
+    """Where `value` breaks `node` of the committed schema. Only the keywords
+    that file uses; jsonschema isn't a dependency."""
+    if "$ref" in node:
+        node = SCHEMA["$defs"][node["$ref"].rsplit("/", 1)[-1]]
+    if "anyOf" in node:
+        options = [_schema_errors(value, option, where) for option in node["anyOf"]]
+        return [] if any(not errors for errors in options) else min(options, key=len)
+    kind = node.get("type")
+    if kind is not None:
+        if isinstance(value, bool) and kind in ("integer", "number"):
+            return [f"{where}: a boolean, not a {kind}"]
+        if not isinstance(value, _JSON_TYPES[kind]):
+            return [f"{where}: not a {kind}"]
+    errors = []
+    if "const" in node and value != node["const"]:
+        errors.append(f"{where}: not {node['const']!r}")
+    if "enum" in node and value not in node["enum"]:
+        errors.append(f"{where}: {value!r} not one of {node['enum']}")
+    if "minimum" in node and value < node["minimum"]:
+        errors.append(f"{where}: below {node['minimum']}")
+    if "maximum" in node and value > node["maximum"]:
+        errors.append(f"{where}: above {node['maximum']}")
+    if "exclusiveMinimum" in node and value <= node["exclusiveMinimum"]:
+        errors.append(f"{where}: not above {node['exclusiveMinimum']}")
+    if "pattern" in node and not re.search(node["pattern"], value):
+        errors.append(f"{where}: doesn't match {node['pattern']}")
+    if isinstance(value, list):
+        if not node.get("minItems", 0) <= len(value) <= node.get("maxItems", len(value)):
+            errors.append(f"{where}: {len(value)} items")
+        prefix = node.get("prefixItems", [])
+        for i, item in enumerate(value):
+            item_node = prefix[i] if i < len(prefix) else node.get("items")
+            if item_node is not None:
+                errors += _schema_errors(item, item_node, f"{where}[{i}]")
+    if isinstance(value, dict):
+        properties = node.get("properties", {})
+        errors += [f"{where}: no {name}" for name in node.get("required", []) if name not in value]
+        for name, item in value.items():
+            if name in properties:
+                errors += _schema_errors(item, properties[name], f"{where}.{name}")
+            elif node.get("additionalProperties") is False:
+                errors.append(f"{where}: unknown field {name}")
+    return errors
+
+
+def test_the_schema_check_catches_bad_grass():
+    """So the next test can't pass by checking nothing."""
+    spec = json.loads(
+        RuleSpecMapper(allow_candidates=True, place_id="snow_hollow")
+        .map(_persona(), 3, "t").model_dump_json()
+    )
+    assert _schema_errors(spec, SCHEMA) == []
+    for field, value in (("healthy_color", [1.0, 1.0]), ("dry_color", [0.5, 1.5, 0.5]),
+                         ("width_scale", 0), ("flower_density", -1), ("blade_length", 1)):
+        bad = json.loads(json.dumps(spec))
+        bad["terrain"]["grass"][field] = value
+        assert _schema_errors(bad, SCHEMA), field
+
+
+def test_every_place_and_season_passes_the_schema():
+    for place in PLACES.places:
+        for season in (place.season, "spring", "summer", "autumn", "winter"):
+            spec = map_persona(_persona(), 3, "t", place=place.model_copy(update={"season": season}))
+            data = json.loads(spec.model_dump_json())
+            assert _schema_errors(data, SCHEMA) == [], (place.id, season)
+            assert SceneSpec.model_validate(data) == spec
+
+
 # -- for the thesis ---------------------------------------------------------
 
 
@@ -747,3 +878,12 @@ def test_the_0_4_settings_print_too():
             "rock_small 0.2, boulder 0.15 |") in tables
     assert "| lakeside | wind_reeds 0.2 | birdsong_wetland |" in tables
     assert "| `focal.distance_m` | neuroticism | 40 | 25 |" in tables
+
+
+def test_the_grass_table_prints_too():
+    tables = rules_markdown()
+    assert "### Grass by season (`terrain.grass`)" in tables
+    assert "| summer | not sent: FlipGameDev's billboards as they are |" in tables
+    assert ("| winter | (0.93, 0.96, 1.00) | (0.78, 0.82, 0.86) | ×0.9 / ×0.6 | ×0.45 | none | – |"
+            in tables)
+    assert "| spring | (0.55, 0.95, 0.40) | (0.45, 0.80, 0.35) | ×1 / ×0.85 | ×0.9 | ×1.8 | – |" in tables

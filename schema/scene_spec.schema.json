@@ -76,6 +76,153 @@
       "title": "AudioLayer",
       "type": "object"
     },
+    "Grass": {
+      "additionalProperties": false,
+      "description": "How the terrain's grass, ferns and reeds look: what Unity's Edit Grass\nTexture window sets on each billboard, and how much grows and flowers.\nFlowers keep their colours; only how many there are changes.\n\nEvery field is optional. Unity reads a missing field, a 0 or an empty\ncolour as \"the season's own\" (its GrassLook table), so 0 is not allowed\nhere: no flowers is no_flowers, not flower_density 0.",
+      "properties": {
+        "healthy_color": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Healthy Color"
+        },
+        "dry_color": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dry Color"
+        },
+        "width_scale": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width Scale"
+        },
+        "height_scale": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Height Scale"
+        },
+        "noise_spread": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Noise Spread"
+        },
+        "grass_density": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grass Density"
+        },
+        "flower_density": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flower Density"
+        },
+        "no_flowers": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "No Flowers"
+        }
+      },
+      "title": "Grass",
+      "type": "object"
+    },
     "Lighting": {
       "additionalProperties": false,
       "properties": {
@@ -744,6 +891,17 @@
           ],
           "default": null,
           "title": "Season"
+        },
+        "grass": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Grass"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "ground_material": {
           "anyOf": [

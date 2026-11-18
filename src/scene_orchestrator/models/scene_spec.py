@@ -43,6 +43,7 @@ from ..axes import axis_problems, resolve_axes
 from ..outputs import SCENE_ID_PATTERN
 
 Unit = Annotated[float, Field(ge=0.0, le=1.0)]
+Positive = Annotated[float, Field(gt=0.0)]
 Degrees = Annotated[float, Field(ge=0.0, le=360.0)]  # clockwise from north (+Z)
 Pixels = Annotated[int, Field(gt=0)]
 Rgb = tuple[Unit, Unit, Unit]
@@ -164,6 +165,28 @@ class Spawn(_Strict):
     facing_deg: Degrees
 
 
+class Grass(_Strict):
+    """How the terrain's grass, ferns and reeds look: what Unity's Edit Grass
+    Texture window sets on each billboard, and how much grows and flowers.
+    Flowers keep their colours; only how many there are changes.
+
+    Every field is optional. Unity reads a missing field, a 0 or an empty
+    colour as "the season's own" (its GrassLook table), so 0 is not allowed
+    here: no flowers is no_flowers, not flower_density 0.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)  # the mapper shares its table's
+
+    healthy_color: Rgb | None = None  # where the grass is lush
+    dry_color: Rgb | None = None  # where it is dry; Unity blends the two in patches
+    width_scale: Positive | None = None  # times each billboard's width
+    height_scale: Positive | None = None  # times each billboard's height
+    noise_spread: Positive | None = None  # how large the colour and size patches are
+    grass_density: Positive | None = None  # times how much grass, ferns and reeds grow
+    flower_density: Positive | None = None  # times how many flowers
+    no_flowers: bool | None = None  # true: no flowers at all
+
+
 class Terrain(_Strict):
     # The place's axes. Each None: the archetype's setting's. Which
     # combinations Unity builds as they are is checked on SceneSpec, once
@@ -173,6 +196,7 @@ class Terrain(_Strict):
     water_relation: WaterRelation | None = None  # where the water is from them
     vegetation: Vegetation | None = None  # every prop count x0.5, x1 or x1.6 in Unity
     season: Season | None = None  # the ground's style for that time of year
+    grass: Grass | None = None  # None: Unity's own look for the resolved season
     # None: the archetype's ground. A name Unity doesn't know leaves the
     # terrain bare: no paint, no grass, no rocks.
     ground_material: str | None = None
